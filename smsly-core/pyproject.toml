@@ -1,6 +1,6 @@
 [project]
 name = "smsly-core"
-version = "1.0.0"
+version = "0.1.1"
 description = "Shared core library for SMSLYCLOUD microservices"
 readme = "README.md"
 requires-python = ">=3.11"
