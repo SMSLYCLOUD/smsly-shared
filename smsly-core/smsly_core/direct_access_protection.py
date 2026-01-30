@@ -214,10 +214,6 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
         if is_gateway_ip(client_ip):
             return await call_next(request)
         
-        # SECURITY: Never block internal IPs (for inter-service communication in dev/docker)
-        if is_internal_ip(client_ip):
-            return await call_next(request)
-        
         # Allow requests with valid gateway signature (even if IP changed due to proxy)
         if self._has_gateway_signature(request):
             return await call_next(request)
