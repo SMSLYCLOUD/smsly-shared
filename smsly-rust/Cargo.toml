@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "smsly-core",
+    "smsly-services",
+]
+resolver = "2"
