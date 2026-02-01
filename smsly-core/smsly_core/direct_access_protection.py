@@ -22,6 +22,7 @@ from starlette.responses import JSONResponse
 from datetime import datetime, timezone
 import structlog
 import hashlib
+import hmac
 
 logger = structlog.get_logger(__name__)
 
@@ -193,13 +194,86 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
         self._memory_attempts[ip] = self._memory_attempts.get(ip, 0) + 1
         return self._memory_attempts[ip]
     
-    def _has_gateway_signature(self, request: Request) -> bool:
-        """Check if request has a valid gateway signature header."""
-        # Check for gateway-specific headers that indicate proper routing
-        gateway_timestamp = request.headers.get("X-Gateway-Timestamp")
-        gateway_signature = request.headers.get("X-Gateway-Signature")
-        return bool(gateway_timestamp and gateway_signature)
-    
+    async def _verify_gateway_signature(self, request: Request) -> bool:
+        """Verify the gateway signature."""
+        timestamp = request.headers.get("X-Gateway-Timestamp")
+        signature = request.headers.get("X-Gateway-Signature")
+
+        if not timestamp or not signature:
+            return False
+
+        # 1. Verify timestamp freshness (5 minutes)
+        try:
+            # Handle ISO format with Z or offset
+            ts_str = timestamp
+            if ts_str.endswith('Z'):
+                ts_str = ts_str[:-1] + '+00:00'
+            ts = datetime.fromisoformat(ts_str)
+            now = datetime.now(timezone.utc)
+            # Allow 5 mins clock skew
+            if abs((now - ts).total_seconds()) > 300:
+                logger.warning("expired_gateway_signature", timestamp=timestamp)
+                return False
+        except Exception:
+             return False
+
+        # 2. Reconstruct signature
+        # Try specific secrets
+        secret = os.getenv("GATEWAY_SECRET") or os.getenv("INTERNAL_API_SECRET")
+        if not secret:
+            # If no secret configured, we can't verify, so we must assume invalid
+            logger.error("missing_secret_for_signature_verification")
+            return False
+
+        # We attempt to verify. Note: The proxy might sign the full path or relative.
+        # We try strict match first.
+        # Also need body hash.
+        body_hash = None
+        try:
+            # Only read body if we can do so safely without consuming the stream
+            # Starlette's BaseHTTPMiddleware consumes the stream if we await request.body()
+            # UNLESS we are in a context where it's already cached or we use the set_body workaround.
+
+            # To be safe and compatible with BaseHTTPMiddleware:
+            # We read the body, but then we MUST restore it for the downstream app.
+
+            body = await request.body()
+            if body:
+                body_hash = hashlib.sha256(body).hexdigest()
+
+            # RESTORE BODY FOR DOWNSTREAM APP
+            # This is the critical fix for BaseHTTPMiddleware consumption issue
+            async def receive_body():
+                return {"type": "http.request", "body": body, "more_body": False}
+            request._receive = receive_body
+
+        except Exception as e:
+            logger.warning("failed_to_read_body_for_signature", error=str(e))
+            return False
+
+        # Reconstruct message: timestamp:path[:body_hash]
+        path = request.url.path
+
+        # Check signature
+        msg = f"{timestamp}:{path}"
+        if body_hash:
+            msg += f":{body_hash}"
+
+        expected = hmac.new(
+            secret.encode(),
+            msg.encode(),
+            hashlib.sha256
+        ).hexdigest()
+
+        if hmac.compare_digest(expected, signature):
+            return True
+
+        # Fallback: Check if path was signed with prefix (common in proxy scenarios)
+        # e.g. /v1/audit/events signed vs /events received
+        # But for security, strict match is better.
+        # If verification fails, we log and return False.
+        return False
+
     async def dispatch(self, request: Request, call_next):
         """Process request and enforce direct access protection."""
         path = request.url.path
@@ -214,9 +288,17 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
         if is_gateway_ip(client_ip):
             return await call_next(request)
         
-        # Allow requests with valid gateway signature (even if IP changed due to proxy)
-        if self._has_gateway_signature(request):
-            return await call_next(request)
+        # Allow requests with VALID gateway signature (even if IP changed due to proxy)
+        if request.headers.get("X-Gateway-Signature"):
+            if await self._verify_gateway_signature(request):
+                return await call_next(request)
+            else:
+                logger.warning(
+                    "invalid_gateway_signature_detected",
+                    ip=client_ip,
+                    path=path
+                )
+                # Fall through to enforcement (block)
         
         # =========================================================================
         # DIRECT ACCESS DETECTED - Enforce protection
