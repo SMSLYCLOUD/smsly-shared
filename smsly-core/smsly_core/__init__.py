@@ -150,6 +150,13 @@ from smsly_core.direct_access import (
     get_direct_access_stats,
 )
 
+# Ledger (NEW)
+from smsly_core.ledger import (
+    RequestLedger,
+    RequestLedgerSync,
+    TraceStage,
+)
+
 __all__ = [
     # Database
     "create_async_engine",
@@ -253,5 +260,9 @@ __all__ = [
     "is_gateway_ip",
     "is_internal_ip",
     "get_direct_access_stats",
+    # Ledger
+    "RequestLedger",
+    "RequestLedgerSync",
+    "TraceStage",
 ]
 
