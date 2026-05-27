@@ -5,8 +5,10 @@ Middleware that protects microservices from direct access bypassing the Security
 """
 
 import os
+import hashlib
+import hmac
 from typing import Optional, Set
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -147,11 +149,60 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
         self._memory_attempts[ip] = self._memory_attempts.get(ip, 0) + 1
         return self._memory_attempts[ip]
     
-    def _has_gateway_signature(self, request: Request) -> bool:
-        """Check if request has valid gateway signature headers."""
-        gateway_timestamp = request.headers.get("X-Gateway-Timestamp")
-        gateway_signature = request.headers.get("X-Gateway-Signature")
-        return bool(gateway_timestamp and gateway_signature)
+    async def _verify_gateway_signature(self, request: Request) -> bool:
+        """Verify HMAC-SHA256 gateway signature with constant-time comparison."""
+        timestamp = request.headers.get("X-Gateway-Timestamp")
+        signature = request.headers.get("X-Gateway-Signature")
+
+        if not timestamp or not signature:
+            return False
+
+        secret = os.getenv("GATEWAY_SECRET") or os.getenv("INTERNAL_API_SECRET")
+        if not secret:
+            logger.error("gateway_signature_missing_secret")
+            return False
+
+        # Verify timestamp freshness (5 minute window - 300s)
+        try:
+            ts_str = timestamp
+            if ts_str.endswith('Z'):
+                ts_str = ts_str[:-1] + '+00:00'
+            ts = datetime.fromisoformat(ts_str)
+            now = datetime.now(timezone.utc)
+            if abs((now - ts).total_seconds()) > 300:
+                logger.warning("expired_gateway_timestamp", timestamp=timestamp)
+                return False
+        except Exception:
+            return False
+
+        # Compute expected HMAC-SHA256
+        path = request.url.path
+        try:
+            body = await request.body()
+            body_hash = hashlib.sha256(body).hexdigest() if body else None
+
+            # Restore body for downstream consumers
+            async def receive_body():
+                return {"type": "http.request", "body": body, "more_body": False}
+            request._receive = receive_body
+        except Exception:
+            body_hash = None
+
+        msg = f"{timestamp}:{path}"
+        if body_hash:
+            msg += f":{body_hash}"
+
+        expected = hmac.new(
+            secret.encode(),
+            msg.encode(),
+            hashlib.sha256
+        ).hexdigest()
+
+        if not hmac.compare_digest(expected, signature):
+            logger.warning("invalid_gateway_signature", path=path)
+            return False
+
+        return True
     
     async def dispatch(self, request: Request, call_next):
         """Process request and enforce direct access protection."""
@@ -167,8 +218,8 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
         if is_gateway_ip(client_ip):
             return await call_next(request)
         
-        # Allow requests with valid gateway signature
-        if self._has_gateway_signature(request):
+        # Verify gateway HMAC signature (constant-time)
+        if await self._verify_gateway_signature(request):
             return await call_next(request)
         
         # DIRECT ACCESS DETECTED

@@ -117,11 +117,14 @@ class SanitizedErrorMiddleware(BaseHTTPMiddleware):
             
             # In production, sanitize 5xx error responses
             if self.is_production and response.status_code >= 500:
-                # Log the original error for debugging
                 logger.warning(
                     "sanitized_error_response",
                     status_code=response.status_code,
                     path=request.url.path,
+                )
+                return JSONResponse(
+                    status_code=response.status_code,
+                    content={"detail": "Internal server error"},
                 )
             
             return response

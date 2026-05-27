@@ -51,13 +51,17 @@ def is_gateway_ip(ip: str) -> bool:
     if not ip:
         return False
     
-    # Check configured gateway IPs
     if GATEWAY_IPS and ip in GATEWAY_IPS:
         return True
     
-    # Fall back to internal IP check for development
-    if not GATEWAY_IPS and is_internal_ip(ip):
-        return True
+    # Do NOT fall back to trusting all internal IPs when GATEWAY_IPS is unset.
+    # Production must explicitly configure GATEWAY_IPS.
+    if not GATEWAY_IPS:
+        environment = os.getenv("ENVIRONMENT", "development")
+        if environment in ("production", "staging", "prod"):
+            return False
+        if is_internal_ip(ip):
+            return True
     
     return False
 
