@@ -28,7 +28,7 @@ Usage (Django):
 
 import hmac
 import logging
-from typing import Optional, List
+from typing import List
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)

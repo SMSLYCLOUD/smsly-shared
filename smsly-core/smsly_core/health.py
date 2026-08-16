@@ -5,7 +5,7 @@ Provides comprehensive health checks with component status for all services.
 """
 
 import time
-from typing import Optional, Dict, Any, Callable, Awaitable
+from typing import Optional, Dict, Callable, Awaitable
 from fastapi import APIRouter, Response
 from pydantic import BaseModel
 from enum import Enum

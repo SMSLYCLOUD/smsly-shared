@@ -11,9 +11,11 @@ Components:
 """
 
 import hashlib
+import hmac as hmac_mod
+import os
 from typing import Any, Dict, List, Literal, Optional
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from enum import Enum
 
 import structlog
@@ -460,8 +462,13 @@ class TrustScoreEngine:
             return "blocked", "block", None
     
     def _hash_phone(self, phone: str) -> str:
-        """Hash phone number for storage."""
-        return hashlib.sha256(phone.encode()).hexdigest()
+        """Hash phone number for storage using HMAC with server-side pepper."""
+        pepper = os.getenv("PHONE_HASH_PEPPER", "")
+        if not pepper:
+            logger.warning("phone_hash_no_pepper", msg="PHONE_HASH_PEPPER not set")
+        return hmac_mod.new(
+            pepper.encode(), phone.encode(), hashlib.sha256
+        ).hexdigest()
 
 
 # Convenience function for quick assessment

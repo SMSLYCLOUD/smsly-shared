@@ -15,8 +15,10 @@ from typing import Optional
 class ProofToken:
     """Generates cryptographic proof of successful verification."""
     
-    def __init__(self, secret: str):
+    def __init__(self, secret: str, issuer: str = "smsly-core", audience: str = ""):
         self.secret = secret
+        self.issuer = issuer
+        self.audience = audience
     
     def generate(self, session_id: str, phone_hash: str) -> str:
         """
@@ -34,6 +36,8 @@ class ProofToken:
             "ph": phone_hash[:16],  # Truncated for privacy
             "ts": int(time.time()),
             "ver": "1",
+            "iss": self.issuer,
+            "aud": self.audience,
         }
         
         payload_json = json.dumps(payload, separators=(',', ':'))
@@ -43,17 +47,18 @@ class ProofToken:
             self.secret.encode(),
             payload_b64.encode(),
             hashlib.sha256,
-        ).hexdigest()[:32]
+        ).hexdigest()
         
         return f"{payload_b64}.{signature}"
     
-    def verify(self, token: str, max_age_seconds: int = 3600) -> Optional[dict]:
+    def verify(self, token: str, max_age_seconds: int = 3600, expected_audience: str = "") -> Optional[dict]:
         """
         Verify a proof token.
         
         Args:
             token: The proof token
             max_age_seconds: Maximum token age
+            expected_audience: Expected audience claim (if provided, must match)
             
         Returns:
             Payload if valid, None otherwise
@@ -70,7 +75,7 @@ class ProofToken:
                 self.secret.encode(),
                 payload_b64.encode(),
                 hashlib.sha256,
-            ).hexdigest()[:32]
+            ).hexdigest()
             
             if not hmac.compare_digest(signature, expected_sig):
                 return None
@@ -81,6 +86,10 @@ class ProofToken:
             
             # Check expiry
             if time.time() - payload.get("ts", 0) > max_age_seconds:
+                return None
+            
+            # Verify audience if expected
+            if expected_audience and payload.get("aud") != expected_audience:
                 return None
             
             return payload

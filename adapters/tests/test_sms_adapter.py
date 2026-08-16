@@ -6,7 +6,7 @@ Verifies feature flag routing, fallback behavior, and error handling.
 
 from django.test import TestCase, override_settings
 from unittest.mock import patch, MagicMock
-from shared.adapters.sms_adapter import get_sms_adapter, SMSAdapter
+from shared.adapters.sms_adapter import get_sms_adapter
 
 
 class SMSAdapterTestCase(TestCase):

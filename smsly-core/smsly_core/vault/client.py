@@ -18,7 +18,6 @@ Usage:
 import os
 import hvac
 from typing import Optional, Dict, Any
-from functools import lru_cache
 import logging
 
 logger = logging.getLogger(__name__)

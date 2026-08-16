@@ -70,12 +70,12 @@ class BaseProviderAdapter(ABC):
     async def initialize(self) -> None:
         """Initialize the adapter (e.g., create HTTP clients)."""
         self._is_initialized = True
-        logger.info(f"Provider adapter initialized", provider=self.name)
+        logger.info("Provider adapter initialized", provider=self.name)
     
     async def close(self) -> None:
         """Clean up resources (e.g., close HTTP clients)."""
         self._is_initialized = False
-        logger.info(f"Provider adapter closed", provider=self.name)
+        logger.info("Provider adapter closed", provider=self.name)
     
     @abstractmethod
     async def send_sms(

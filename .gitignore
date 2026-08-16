@@ -1,7 +1,8 @@
-# Byte-compiled / optimized / DLL files
+﻿# Python
 __pycache__/
 *.py[cod]
-*$py.class
+*.class
+*.so
 
 # Virtual environments
 venv/
@@ -9,22 +10,36 @@ ENV/
 env/
 .venv/
 
-# Environment variables
+# Environment
 .env
 .env.local
 .env.*.local
+.env.production
+.env.microservices
+!.env.example
+!.env.example.*
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Distribution
+# Logs
+*.log
+logs/
+
+# Build
 dist/
 build/
 *.egg-info/

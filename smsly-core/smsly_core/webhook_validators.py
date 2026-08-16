@@ -18,8 +18,8 @@ Usage:
 
 import hashlib
 import hmac
-import os
 import json
+import time
 from typing import Optional, Tuple
 
 # ─────────────────────────────── Twilio ────────────────────────────────
@@ -61,7 +61,6 @@ async def validate_twilio_signature(request, auth_token: str) -> bool:
         params = {}
 
     # Compute expected signature: HMAC-SHA1(full_url, auth_token)
-    import urllib.parse
     sorted_params = sorted(params.items())
     data = url
     for key, value in sorted_params:
@@ -199,6 +198,14 @@ async def _validate_stripe_manual(request, webhook_secret: str) -> Tuple[bool, O
     timestamp = parts.get("t", "")
     expected_sig = parts.get("v1", "")
     if not timestamp or not expected_sig:
+        return False, None
+
+    # Check timestamp freshness (5 minute window)
+    try:
+        ts_epoch = int(timestamp)
+        if abs(time.time() - ts_epoch) > 300:
+            return False, None
+    except (ValueError, TypeError):
         return False, None
 
     signed_payload = f"{timestamp}.{body.decode('utf-8')}"

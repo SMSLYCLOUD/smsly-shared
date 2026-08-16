@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from enum import Enum
 import structlog
 
+from smsly_core.password.hasher import get_cached_hasher
+
 logger = structlog.get_logger(__name__)
 
 
@@ -80,34 +82,37 @@ def generate_otp(length: int = 6, alphanumeric: bool = False) -> str:
 
 def hash_otp(otp: str, salt: str) -> str:
     """
-    Hash an OTP with salt using SHA-256.
+    Hash an OTP with salt using Argon2id.
     
     Args:
         otp: Plain OTP
         salt: Random salt
         
     Returns:
-        Hashed OTP
+        Argon2id hash
     """
-    return hashlib.sha256(f"{salt}:{otp}".encode()).hexdigest()
+    hasher = get_cached_hasher()
+    return hasher.hash(f"{salt}:{otp}")
 
 
 def verify_otp_hash(otp: str, salt: str, stored_hash: str) -> bool:
     """
-    Verify an OTP against its hash.
-    
-    Uses constant-time comparison.
+    Verify an OTP against its Argon2id hash.
     
     Args:
         otp: User-provided OTP
         salt: Original salt
-        stored_hash: Stored hash to compare
+        stored_hash: Stored Argon2id hash
         
     Returns:
         True if OTP matches
     """
-    computed_hash = hash_otp(otp, salt)
-    return hmac.compare_digest(computed_hash, stored_hash)
+    try:
+        hasher = get_cached_hasher()
+        hasher.verify(stored_hash, f"{salt}:{otp}")
+        return True
+    except Exception:
+        return False
 
 
 def generate_salt() -> str:
@@ -236,8 +241,10 @@ class ProofToken:
     Generates cryptographic proof of successful verification.
     """
     
-    def __init__(self, secret: str):
+    def __init__(self, secret: str, issuer: str = "smsly-core", audience: str = ""):
         self.secret = secret
+        self.issuer = issuer
+        self.audience = audience
     
     def generate(self, session_id: str, phone_hash: str) -> str:
         """
@@ -259,6 +266,8 @@ class ProofToken:
             "ph": phone_hash[:16],  # Truncated for privacy
             "ts": int(time.time()),
             "ver": "1",
+            "iss": self.issuer,
+            "aud": self.audience,
         }
         
         payload_json = json.dumps(payload, separators=(',', ':'))
@@ -268,17 +277,18 @@ class ProofToken:
             self.secret.encode(),
             payload_b64.encode(),
             hashlib.sha256,
-        ).hexdigest()[:32]
+        ).hexdigest()
         
         return f"{payload_b64}.{signature}"
     
-    def verify(self, token: str, max_age_seconds: int = 3600) -> Optional[dict]:
+    def verify(self, token: str, max_age_seconds: int = 3600, expected_audience: str = "") -> Optional[dict]:
         """
         Verify a proof token.
         
         Args:
             token: The proof token
             max_age_seconds: Maximum token age
+            expected_audience: Expected audience claim (if provided, must match)
             
         Returns:
             Payload if valid, None otherwise
@@ -299,7 +309,7 @@ class ProofToken:
                 self.secret.encode(),
                 payload_b64.encode(),
                 hashlib.sha256,
-            ).hexdigest()[:32]
+            ).hexdigest()
             
             if not hmac.compare_digest(signature, expected_sig):
                 return None
@@ -310,6 +320,10 @@ class ProofToken:
             
             # Check expiry
             if time.time() - payload.get("ts", 0) > max_age_seconds:
+                return None
+            
+            # Verify audience if expected
+            if expected_audience and payload.get("aud") != expected_audience:
                 return None
             
             return payload

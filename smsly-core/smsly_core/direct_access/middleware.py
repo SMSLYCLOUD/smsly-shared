@@ -2,13 +2,13 @@
 Direct Access Protection Middleware
 ====================================
 Middleware that protects microservices from direct access bypassing the Security Gateway.
+
+Phase 4: HMAC removed. Only SPIFFE mTLS accepted.
 """
 
 import os
-import hashlib
-import hmac
-from typing import Optional, Set
-from datetime import datetime, timezone, timedelta
+from typing import Set
+from datetime import datetime, timezone
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -23,6 +23,16 @@ from .config import (
 )
 from .ip_utils import is_gateway_ip
 
+try:
+    from smsly_core.spiffe_auth import (
+        DualAuthValidator,
+        get_allowed_callers,
+        MigrationPhase,
+    )
+    _SPIFFE_AVAILABLE = True
+except ImportError:
+    _SPIFFE_AVAILABLE = False
+
 logger = structlog.get_logger(__name__)
 
 
@@ -35,6 +45,7 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
     1. Warned (1st-2nd attempt) with guidance on the proper URL
     2. Blocked and blacklisted (3rd+ attempt)
     
+    Phase 4: HMAC removed. Only SPIFFE mTLS accepted.
     Uses Redis for distributed tracking across multiple service instances.
     """
     
@@ -63,6 +74,23 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
         self._memory_attempts = {}
         self._memory_blacklist = set()
         self._init_redis(redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+        
+        # Initialize SPIFFE validator
+        self._spiffe_validator = None
+        if _SPIFFE_AVAILABLE:
+            try:
+                allowed = get_allowed_callers(self.service_name)
+                self._spiffe_validator = DualAuthValidator(
+                    service_name=self.service_name,
+                    allowed_callers=allowed,
+                )
+                logger.info(
+                    "direct_access_initialized",
+                    service=self.service_name,
+                    phase=self._spiffe_validator.flags.migration_phase.value,
+                )
+            except Exception as e:
+                logger.error("direct_access_init_failed", error=str(e))
     
     def _init_redis(self, redis_url: str):
         """Initialize Redis connection."""
@@ -149,60 +177,28 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
         self._memory_attempts[ip] = self._memory_attempts.get(ip, 0) + 1
         return self._memory_attempts[ip]
     
-    async def _verify_gateway_signature(self, request: Request) -> bool:
-        """Verify HMAC-SHA256 gateway signature with constant-time comparison."""
-        timestamp = request.headers.get("X-Gateway-Timestamp")
-        signature = request.headers.get("X-Gateway-Signature")
-
-        if not timestamp or not signature:
+    async def _verify_gateway_identity(self, request: Request) -> bool:
+        """Verify SPIFFE mTLS identity from gateway."""
+        if not self._spiffe_validator:
+            logger.error("direct_access_no_validator")
             return False
 
-        secret = os.getenv("GATEWAY_SECRET") or os.getenv("INTERNAL_API_SECRET")
-        if not secret:
-            logger.error("gateway_signature_missing_secret")
-            return False
+        headers = {k: v for k, v in request.headers.items()}
+        result = self._spiffe_validator.validate(
+            headers=headers,
+            method=request.method,
+            path=request.url.path,
+        )
 
-        # Verify timestamp freshness (5 minute window - 300s)
-        try:
-            ts_str = timestamp
-            if ts_str.endswith('Z'):
-                ts_str = ts_str[:-1] + '+00:00'
-            ts = datetime.fromisoformat(ts_str)
-            now = datetime.now(timezone.utc)
-            if abs((now - ts).total_seconds()) > 300:
-                logger.warning("expired_gateway_timestamp", timestamp=timestamp)
-                return False
-        except Exception:
-            return False
+        if result.authenticated:
+            return True
 
-        # Compute expected HMAC-SHA256
-        path = request.url.path
-        try:
-            body = await request.body()
-            body_hash = hashlib.sha256(body).hexdigest() if body else None
-
-            # Restore body for downstream consumers
-            async def receive_body():
-                return {"type": "http.request", "body": body, "more_body": False}
-            request._receive = receive_body
-        except Exception:
-            body_hash = None
-
-        msg = f"{timestamp}:{path}"
-        if body_hash:
-            msg += f":{body_hash}"
-
-        expected = hmac.new(
-            secret.encode(),
-            msg.encode(),
-            hashlib.sha256
-        ).hexdigest()
-
-        if not hmac.compare_digest(expected, signature):
-            logger.warning("invalid_gateway_signature", path=path)
-            return False
-
-        return True
+        logger.debug(
+            "direct_access_spiffe_failed",
+            path=request.url.path,
+            reason=result.reason,
+        )
+        return False
     
     async def dispatch(self, request: Request, call_next):
         """Process request and enforce direct access protection."""
@@ -214,12 +210,12 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
         
         client_ip = self._get_client_ip(request)
         
-        # Allow requests from Security Gateway
+        # Allow requests from Security Gateway (IP-based)
         if is_gateway_ip(client_ip):
             return await call_next(request)
         
-        # Verify gateway HMAC signature (constant-time)
-        if await self._verify_gateway_signature(request):
+        # Verify SPIFFE mTLS identity
+        if await self._verify_gateway_identity(request):
             return await call_next(request)
         
         # DIRECT ACCESS DETECTED

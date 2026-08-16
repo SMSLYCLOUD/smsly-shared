@@ -5,7 +5,7 @@ Common metrics for SMSLY microservices.
 """
 
 from typing import Dict, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from time import time
 import structlog
 

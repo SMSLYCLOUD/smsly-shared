@@ -38,7 +38,7 @@ import time
 import traceback
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Callable
+from typing import Any, Dict, Callable
 from contextvars import ContextVar
 from functools import wraps
 

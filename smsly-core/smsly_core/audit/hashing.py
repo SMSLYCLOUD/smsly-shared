@@ -2,10 +2,15 @@
 Audit Hashing
 =============
 Hash computation and chain verification for audit logs.
+
+Supports optional HMAC key for tamper-evident hashing.
+Without HMAC key, falls back to SHA-256 for backward compatibility.
 """
 
 import json
 import hashlib
+import hmac as hmac_mod
+import os
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
 import structlog
@@ -21,6 +26,7 @@ def compute_event_hash(
     service: str,
     event_type: str,
     payload: Dict[str, Any],
+    hmac_key: Optional[str] = None,
 ) -> str:
     """
     Compute the hash for an audit event.
@@ -32,15 +38,19 @@ def compute_event_hash(
     - The event type
     - The payload contents
     
+    If hmac_key is provided, uses HMAC-SHA256 for tamper-evident hashing.
+    Otherwise falls back to plain SHA-256 for backward compatibility.
+    
     Args:
         previous_hash: Hash of the previous event (None for first event)
         timestamp: Event timestamp
         service: Service name that generated the event
         event_type: Type of event
         payload: Event payload data
+        hmac_key: Optional HMAC key for tamper-evident hashing
         
     Returns:
-        SHA-256 hash of the event
+        Hash of the event (hex string)
     """
     hash_input = json.dumps({
         "previous_hash": previous_hash,
@@ -50,15 +60,25 @@ def compute_event_hash(
         "payload": payload,
     }, sort_keys=True, separators=(',', ':'))
     
+    key = hmac_key or os.getenv("AUDIT_CHAIN_KEY", "")
+    if key:
+        return hmac_mod.new(
+            key.encode(), hash_input.encode(), hashlib.sha256
+        ).hexdigest()
+    logger.warning("audit_chain_no_hmac_key", msg="AUDIT_CHAIN_KEY not set — using plain SHA-256 (not tamper-evident)")
     return hashlib.sha256(hash_input.encode()).hexdigest()
 
 
-def verify_chain_integrity(events: List[AuditEvent]) -> Tuple[bool, Optional[int]]:
+def verify_chain_integrity(
+    events: List[AuditEvent],
+    hmac_key: Optional[str] = None,
+) -> Tuple[bool, Optional[int]]:
     """
     Verify the integrity of an audit event chain.
     
     Args:
         events: List of events in chronological order
+        hmac_key: Optional HMAC key (must match the key used for hashing)
         
     Returns:
         Tuple of (is_valid, first_invalid_index)
@@ -80,6 +100,7 @@ def verify_chain_integrity(events: List[AuditEvent]) -> Tuple[bool, Optional[int
             event.service,
             event.event_type,
             event.payload,
+            hmac_key=hmac_key,
         )
         
         if event.hash != expected_hash:

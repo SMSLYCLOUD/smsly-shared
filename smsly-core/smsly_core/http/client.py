@@ -62,7 +62,7 @@ class BaseInternalClient:
     def _map_exception(self, exc: Exception) -> Exception:
         """Map httpx exceptions to internal service exceptions."""
         if isinstance(exc, httpx.TimeoutException):
-            return ServiceTimeoutError(f"Request timed out", service=self.service_name)
+            return ServiceTimeoutError("Request timed out", service=self.service_name)
         if isinstance(exc, (httpx.ConnectError, httpx.NetworkError)):
             return ServiceUnavailableError(f"Failed to connect: {str(exc)}", service=self.service_name)
         if isinstance(exc, httpx.HTTPStatusError):

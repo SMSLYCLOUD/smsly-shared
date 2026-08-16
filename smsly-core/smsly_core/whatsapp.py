@@ -6,7 +6,7 @@ WhatsApp Business API template management.
 
 from typing import Dict, Any, List, Optional
 from enum import Enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 import structlog
 

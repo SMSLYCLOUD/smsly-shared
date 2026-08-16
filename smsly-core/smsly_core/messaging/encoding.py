@@ -4,7 +4,6 @@ Encoding Detection
 Functions for SMS encoding detection and character counting.
 """
 
-from typing import Tuple
 
 from .models import EncodingType, GSM7_BASIC, GSM7_EXTENDED
 

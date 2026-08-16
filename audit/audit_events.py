@@ -11,9 +11,8 @@ import os
 import hmac
 import hashlib
 import json
-import asyncio
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, List
 import httpx
 import logging
 

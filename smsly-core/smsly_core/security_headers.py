@@ -7,7 +7,7 @@ Adds security-related HTTP headers to all responses.
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import Response, JSONResponse
 from typing import Callable, Awaitable
 import structlog
 

@@ -18,9 +18,8 @@ import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
 from fastapi import Request
 import httpx
 import logging
@@ -248,7 +247,7 @@ class ResilientAuditMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
             status_code = response.status_code
             return response
-        except Exception as e:
+        except Exception:
             status_code = 500
             raise
         finally:

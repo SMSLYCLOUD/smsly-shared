@@ -14,8 +14,7 @@ Uses Redis for distributed tracking across all microservices.
 """
 
 import os
-import time
-from typing import Optional, Set, Tuple
+from typing import Set
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse

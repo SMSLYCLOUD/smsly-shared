@@ -5,7 +5,7 @@ Tests for core functionality.
 """
 
 import pytest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 
 class TestAPIKeys:
@@ -212,7 +212,6 @@ class TestAudit:
     def test_compute_event_hash(self):
         """Should compute deterministic hash."""
         from smsly_core.audit import compute_event_hash
-        from datetime import datetime, timezone
         
         ts = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
         

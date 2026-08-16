@@ -2,13 +2,20 @@
 Internal Authentication Module
 ==============================
 Secure inter-service communication with HMAC signing and replay protection.
+
+DEPRECATED (Phase 4): HMAC signing functions are deprecated for inter-service auth.
+Use DualAuthValidator from spiffe_auth for inter-service authentication.
+HMAC functions are retained for SDK client authentication only.
+
+Migration: Replace compute_signature/verify_signature with DualAuthValidator.
 """
 
 import hmac
 import hashlib
 import time
 import uuid
-from typing import Optional, Dict, Any, Tuple
+import warnings
+from typing import Optional, Dict
 from dataclasses import dataclass
 from enum import Enum
 import structlog
@@ -64,6 +71,17 @@ MAX_TIMESTAMP_SKEW_SECONDS = 300  # 5 minutes
 SIGNATURE_ALGORITHM = "sha256"
 
 
+def _deprecation_warning(func_name: str):
+    """Issue deprecation warning for HMAC functions."""
+    warnings.warn(
+        f"{func_name} is deprecated for inter-service auth. "
+        f"Use DualAuthValidator from smsly_core.spiffe_auth instead. "
+        f"HMAC functions are retained for SDK client authentication only.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+
 def compute_signature(
     secret: str,
     method: str,
@@ -74,6 +92,9 @@ def compute_signature(
 ) -> str:
     """
     Compute HMAC-SHA256 signature for request authentication.
+    
+    DEPRECATED: Use DualAuthValidator for inter-service auth.
+    Retained for SDK client authentication.
     
     The signature covers:
     - HTTP method
@@ -93,6 +114,7 @@ def compute_signature(
     Returns:
         Hex-encoded HMAC-SHA256 signature
     """
+    _deprecation_warning("compute_signature")
     message = f"{method.upper()}\n{path}\n{timestamp}\n{nonce}\n{body_hash}"
     signature = hmac.new(
         secret.encode(),
@@ -127,6 +149,9 @@ def verify_signature(
     """
     Verify request signature.
     
+    DEPRECATED: Use DualAuthValidator for inter-service auth.
+    Retained for SDK client authentication.
+    
     Uses constant-time comparison to prevent timing attacks.
     
     Args:
@@ -141,6 +166,7 @@ def verify_signature(
     Returns:
         True if signature is valid
     """
+    _deprecation_warning("verify_signature")
     expected_signature = compute_signature(
         secret, method, path, timestamp, nonce, body_hash
     )
@@ -177,6 +203,9 @@ def create_signed_headers(
     """
     Create headers for a signed request.
     
+    DEPRECATED: Use DualAuthValidator for inter-service auth.
+    Retained for SDK client authentication.
+    
     Args:
         secret: API key secret or shared secret
         key_id: API key ID for identification
@@ -187,6 +216,7 @@ def create_signed_headers(
     Returns:
         Dictionary of headers to include in request
     """
+    _deprecation_warning("create_signed_headers")
     timestamp = int(time.time())
     nonce = generate_nonce()
     body_hash = hash_body(body)

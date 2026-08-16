@@ -2,11 +2,15 @@
 OTP Hashing Utilities
 =====================
 Secure hashing and verification functions for OTP codes.
+
+Uses Argon2id for OTP hashing to prevent brute-force attacks.
+With only 1M possible values for 6-digit OTPs, SHA-256 is too fast.
 """
 
 import secrets
 import hashlib
-import hmac
+
+from smsly_core.password.hasher import get_cached_hasher
 
 
 def generate_otp(length: int = 6, alphanumeric: bool = False) -> str:
@@ -33,34 +37,37 @@ def generate_otp(length: int = 6, alphanumeric: bool = False) -> str:
 
 def hash_otp(otp: str, salt: str) -> str:
     """
-    Hash an OTP with salt using SHA-256.
+    Hash an OTP with salt using Argon2id.
     
     Args:
         otp: Plain OTP
         salt: Random salt
         
     Returns:
-        Hashed OTP
+        Argon2id hash
     """
-    return hashlib.sha256(f"{salt}:{otp}".encode()).hexdigest()
+    hasher = get_cached_hasher()
+    return hasher.hash(f"{salt}:{otp}")
 
 
 def verify_otp_hash(otp: str, salt: str, stored_hash: str) -> bool:
     """
-    Verify an OTP against its hash.
-    
-    Uses constant-time comparison to prevent timing attacks.
+    Verify an OTP against its Argon2id hash.
     
     Args:
         otp: User-provided OTP
         salt: Original salt
-        stored_hash: Stored hash to compare
+        stored_hash: Stored Argon2id hash
         
     Returns:
         True if OTP matches
     """
-    computed_hash = hash_otp(otp, salt)
-    return hmac.compare_digest(computed_hash, stored_hash)
+    try:
+        hasher = get_cached_hasher()
+        hasher.verify(stored_hash, f"{salt}:{otp}")
+        return True
+    except Exception:
+        return False
 
 
 def generate_salt() -> str:

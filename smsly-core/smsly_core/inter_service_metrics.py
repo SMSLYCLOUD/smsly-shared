@@ -37,7 +37,7 @@ Usage:
 import time
 import asyncio
 from functools import wraps
-from typing import Optional, Dict, Any, Callable, TypeVar, Awaitable
+from typing import Dict, Any, Callable, TypeVar, Awaitable
 import structlog
 
 logger = structlog.get_logger(__name__)

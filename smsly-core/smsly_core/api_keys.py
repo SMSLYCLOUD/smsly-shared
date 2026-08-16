@@ -6,7 +6,7 @@ Secure API key generation, validation, and rotation.
 
 import secrets
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional, List
 from dataclasses import dataclass
 from enum import Enum

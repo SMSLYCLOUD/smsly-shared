@@ -5,8 +5,7 @@ Token bucket and sliding window rate limiters with Redis backend.
 """
 
 import time
-import json
-from typing import Optional, Tuple
+from typing import Optional
 from dataclasses import dataclass
 from enum import Enum
 import structlog

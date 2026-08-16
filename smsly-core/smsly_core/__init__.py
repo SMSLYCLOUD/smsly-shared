@@ -32,11 +32,9 @@ from smsly_core.audit import (
     verify_chain_integrity,
 )
 
-# Internal Auth
+# Internal Auth (Phase 4: HMAC removed, only SPIFFE mTLS accepted)
+# Legacy HMAC functions deprecated - use DualAuthValidator from spiffe_auth
 from smsly_core.internal_auth import (
-    compute_signature,
-    verify_signature,
-    create_signed_headers,
     AuthDecision,
     AuthResult,
     NonceCache,
@@ -186,10 +184,7 @@ __all__ = [
     "AuditLogger",
     "compute_event_hash",
     "verify_chain_integrity",
-    # Internal Auth
-    "compute_signature",
-    "verify_signature",
-    "create_signed_headers",
+    # Internal Auth (Phase 4: HMAC removed)
     "AuthDecision",
     "AuthResult",
     "NonceCache",
