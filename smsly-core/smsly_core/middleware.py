@@ -39,7 +39,7 @@ def setup_cors(
         setup_cors(app)  # Uses CORS_ORIGINS env var
         
         # Or with explicit origins:
-        setup_cors(app, origins=["https://app.smsly.cloud"])
+        setup_cors(app, origins=["https://app.trulay.co"])
     """
     # Get origins from explicit list or environment
     if origins is None:

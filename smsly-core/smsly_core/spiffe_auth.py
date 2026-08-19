@@ -1,28 +1,31 @@
 """
 SPIFFE/SPIRE mTLS Authentication Module
 ========================================
-Shared dual-auth (mTLS + HMAC) validation for the HMAC-to-SPIFFE migration.
+Phase 4: HMAC removed. Only mTLS accepted.
 
-Phase 2: Services accept BOTH HMAC and mTLS, with mTLS taking priority.
-Phase 3: mTLS becomes required (strict mode). HMAC fallback disabled.
-Phase 4: HMAC removed entirely. Only mTLS accepted.
+Validates incoming requests by verifying the peer's X.509 SVID
+certificate from the TLS handshake. The SPIFFE ID is extracted
+from the certificate, not from headers.
 
 Usage:
     from smsly_core.spiffe_auth import (
         DualAuthValidator,
         get_spiffe_feature_flags,
-        extract_spiffe_id_from_request,
+        extract_spiffe_id_from_cert,
         is_spiffe_mtls_enabled,
         SPIFFE_TRUST_DOMAIN,
-        MigrationPhase,
     )
 
     # In middleware:
     validator = DualAuthValidator(
         service_name="smsly-rate-limit",
-        allowed_callers={"spiffe://smsly.cloud/service/gateway"},
+        allowed_callers={"spiffe://trulay.co/service/gateway"},
     )
-    result = validator.validate(request_headers, method, path)
+    result = validator.validate(
+        peer_cert_der=peer_certificate_bytes,
+        method=request.method,
+        path=request.url.path,
+    )
     if result.authenticated:
         ...
 """
@@ -32,7 +35,6 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from enum import Enum
 from typing import Dict, Optional, Set
 
 try:
@@ -45,96 +47,41 @@ except ImportError:
 # Constants
 # ---------------------------------------------------------------------------
 
-SPIFFE_TRUST_DOMAIN = os.getenv("SPIFFE_TRUST_DOMAIN", "smsly.cloud")
-SPIFFE_HEADER_ID = "X-SPIFFE-ID"
-SPIFFE_AUTHORIZATION_HEADER = "X-SPIFFE-Authorization"
-
-# Allowed SPIFFE ID prefix
+SPIFFE_TRUST_DOMAIN = os.getenv("SPIFFE_TRUST_DOMAIN", "trulay.co")
 SPIFFE_ID_PREFIX = f"spiffe://{SPIFFE_TRUST_DOMAIN}/service/"
 
-
-# ---------------------------------------------------------------------------
-# Migration Phase
-# ---------------------------------------------------------------------------
-
-class MigrationPhase(str, Enum):
-    """
-    Explicit migration phase tracking.
-    
-    Phase 2: Dual-auth (mTLS priority, HMAC fallback)
-    Phase 3: Strict mTLS (HMAC disabled, mTLS required)
-    Phase 4: mTLS only (HMAC code removed)
-    """
-    PHASE_2 = "phase2"
-    PHASE_3 = "phase3"
-    PHASE_4 = "phase4"
-
-
-class AuthMethod(str, Enum):
-    SPIFFE_MTLS = "spiffe"
-    HMAC = "hmac"
-    NONE = "none"
+# SPIFFE OID: 1.3.6.1.4.1.57264.1.1
+SPIFFE_OID_DOTTED = "1.3.6.1.4.1.57264.1.1"
 
 
 # ---------------------------------------------------------------------------
-# Feature Flags
+# Feature Flags (Phase 4 only)
 # ---------------------------------------------------------------------------
 
 @dataclass
 class SPIFFEFeatureFlags:
     """
-    Feature flags for the HMAC-to-SPIFFE migration.
-    Read from environment variables with safe defaults.
-    
-    Phase progression is controlled by MIGRATION_PHASE env var:
-    - phase2: feature_spiffe_mtls=True, hmac_fallback_enabled=True, spiffe_mtls_strict_mode=False
-    - phase3: feature_spiffe_mtls=True, hmac_fallback_enabled=False, spiffe_mtls_strict_mode=True
-    - phase4: feature_spiffe_mtls=True, hmac_fallback_enabled=False, spiffe_mtls_strict_mode=True (HMAC code removed)
+    Feature flags for mTLS authentication.
+    Phase 4: HMAC removed, mTLS required.
     """
     feature_spiffe_mtls: bool = True
-    spiffe_mtls_strict_mode: bool = False
-    hmac_fallback_enabled: bool = True
+    spiffe_mtls_strict_mode: bool = True
+    hmac_fallback_enabled: bool = False
     auth_metrics_enabled: bool = False
-    spiffe_identity_forwarding: bool = False
-    caller_svid_validation: bool = False
-    migration_phase: MigrationPhase = MigrationPhase.PHASE_2
+    spiffe_identity_forwarding: bool = True
+    caller_svid_validation: bool = True
+    migration_phase: str = "phase4"
 
     @classmethod
     def from_env(cls) -> "SPIFFEFeatureFlags":
-        # Determine migration phase from env (default: phase4)
-        phase_str = os.getenv("MIGRATION_PHASE", "phase4").lower()
-        try:
-            phase = MigrationPhase(phase_str)
-        except ValueError:
-            logger.warning(f"Invalid MIGRATION_PHASE '{phase_str}', defaulting to phase4")
-            phase = MigrationPhase.PHASE_4
-        
-        # Derive flags from phase
-        if phase == MigrationPhase.PHASE_2:
-            feature_spiffe = True
-            strict_mode = False
-            hmac_fallback = True
-        elif phase == MigrationPhase.PHASE_3:
-            feature_spiffe = True
-            strict_mode = True
-            hmac_fallback = False
-        elif phase == MigrationPhase.PHASE_4:
-            feature_spiffe = True
-            strict_mode = True
-            hmac_fallback = False
-        else:
-            feature_spiffe = True
-            strict_mode = False
-            hmac_fallback = True
-        
         return cls(
-            feature_spiffe_mtls=_env_bool("FEATURE_SPIFFE_MTLS", feature_spiffe),
-            spiffe_mtls_strict_mode=_env_bool("SPIFFE_MTLS_STRICT_MODE", strict_mode),
-            hmac_fallback_enabled=_env_bool("HMAC_FALLBACK_ENABLED", hmac_fallback),
+            feature_spiffe_mtls=_env_bool("FEATURE_SPIFFE_MTLS", True),
+            spiffe_mtls_strict_mode=_env_bool("SPIFFE_MTLS_STRICT_MODE", True),
+            hmac_fallback_enabled=_env_bool("HMAC_FALLBACK_ENABLED", False),
             auth_metrics_enabled=_env_bool("AUTH_METRICS_ENABLED", False),
-            spiffe_identity_forwarding=_env_bool("SPIFFE_IDENTITY_FORWARDING", False),
-            caller_svid_validation=_env_bool("CALLER_SVID_VALIDATION", False),
-            migration_phase=phase,
+            spiffe_identity_forwarding=_env_bool("SPIFFE_IDENTITY_FORWARDING", True),
+            caller_svid_validation=_env_bool("CALLER_SVID_VALIDATION", True),
+            migration_phase=os.getenv("MIGRATION_PHASE", "phase4"),
         )
 
 
@@ -153,7 +100,7 @@ def get_spiffe_feature_flags() -> SPIFFEFeatureFlags:
 
 
 def is_spiffe_mtls_enabled() -> bool:
-    """Quick check: is SPIFFE mTLS enabled at all?"""
+    """Quick check: is SPIFFE mTLS enabled?"""
     return _env_bool("FEATURE_SPIFFE_MTLS", True)
 
 
@@ -163,35 +110,84 @@ def is_spiffe_mtls_enabled() -> bool:
 
 @dataclass
 class AuthResult:
-    """Result of a dual-auth validation attempt."""
+    """Result of mTLS validation attempt."""
     authenticated: bool
-    method: AuthMethod = AuthMethod.NONE
+    method: str = "spiffe"
     spiffe_id: Optional[str] = None
     reason: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
-# SPIFFE ID Extraction
+# SPIFFE ID Extraction from Certificate
 # ---------------------------------------------------------------------------
 
-def extract_spiffe_id_from_headers(headers: Dict[str, str]) -> Optional[str]:
+def extract_spiffe_id_from_cert(peer_cert_der: bytes) -> Optional[str]:
     """
-    Extract SPIFFE ID from request headers.
+    Extract SPIFFE ID from a peer's X.509 certificate (DER-encoded).
 
-    The Gateway forwards the caller's SPIFFE ID via X-SPIFFE-ID header
-    after mTLS is established. This is the primary source during Phase 3+.
+    Looks for the SPIFFE OID (1.3.6.1.4.1.57264.1.1) in the certificate
+    extensions, or URI SANs starting with "spiffe://".
 
-    During Phase 2, we also accept X-SPIFFE-Authorization as an alias.
+    Args:
+        peer_cert_der: DER-encoded X.509 certificate from TLS handshake.
+
+    Returns:
+        SPIFFE ID string or None.
     """
-    # Normalize header keys to lowercase for case-insensitive lookup
-    lower_headers = {k.lower(): v for k, v in headers.items()}
+    try:
+        from cryptography import x509
+        cert = x509.load_der_x509_certificate(peer_cert_der)
+        return _extract_spiffe_from_cert_obj(cert)
+    except ImportError:
+        logger.error("cryptography library required for SPIFFE ID extraction")
+        return None
+    except Exception as e:
+        logger.warning("Failed to extract SPIFFE ID from cert: %s", e)
+        return None
 
-    spiffe_id = lower_headers.get(SPIFFE_HEADER_ID.lower())
-    if not spiffe_id:
-        spiffe_id = lower_headers.get(SPIFFE_AUTHORIZATION_HEADER.lower())
 
-    if spiffe_id and _is_valid_spiffe_id(spiffe_id):
-        return spiffe_id
+def extract_spiffe_id_from_pem(cert_pem: bytes) -> Optional[str]:
+    """Extract SPIFFE ID from a PEM-encoded certificate."""
+    try:
+        from cryptography import x509
+        cert = x509.load_pem_x509_certificate(cert_pem)
+        return _extract_spiffe_from_cert_obj(cert)
+    except Exception as e:
+        logger.warning("Failed to extract SPIFFE ID from PEM cert: %s", e)
+        return None
+
+
+def _extract_spiffe_from_cert_obj(cert) -> Optional[str]:
+    """Extract SPIFFE ID from a cryptography.x509.Certificate object."""
+    try:
+        from cryptography import x509
+
+        # Method 1: SPIFFE OID extension
+        SPIFFE_OID = x509.ObjectIdentifier(SPIFFE_OID_DOTTED)
+        try:
+            san_ext = cert.extensions.get_extension_for_oid(SPIFFE_OID)
+            spiffe_id = str(san_ext.value.value)
+            if _is_valid_spiffe_id(spiffe_id):
+                return spiffe_id
+        except x509.ExtensionNotFound:
+            pass
+
+        # Method 2: URI SAN entries
+        try:
+            san_ext = cert.extensions.get_extension_for_class(
+                x509.SubjectAlternativeName
+            )
+            for uri in san_ext.value.get_values_for_type(
+                x509.UniformResourceIdentifier
+            ):
+                if uri.startswith("spiffe://") and _is_valid_spiffe_id(uri):
+                    return uri
+        except x509.ExtensionNotFound:
+            pass
+
+    except ImportError:
+        pass
+
     return None
 
 
@@ -199,13 +195,10 @@ def _is_valid_spiffe_id(spiffe_id: str) -> bool:
     """Validate SPIFFE ID format and trust domain."""
     if not spiffe_id.startswith("spiffe://"):
         return False
-    # Must be under our trust domain
     if not spiffe_id.startswith(f"spiffe://{SPIFFE_TRUST_DOMAIN}/"):
         return False
-    # Must be a service identity
     if not spiffe_id.startswith(SPIFFE_ID_PREFIX):
         return False
-    # Minimum valid: spiffe://smsly.cloud/service/x
     parts = spiffe_id[len(SPIFFE_ID_PREFIX):]
     if not parts or parts.isspace():
         return False
@@ -213,16 +206,15 @@ def _is_valid_spiffe_id(spiffe_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Dual Auth Validator
+# mTLS Validator
 # ---------------------------------------------------------------------------
 
 class DualAuthValidator:
     """
-    Validates requests using dual-auth strategy (mTLS + HMAC).
+    Validates requests using mTLS (Phase 4).
 
-    Phase 2: mTLS priority, HMAC fallback.
-    Phase 3: mTLS required (strict mode). HMAC disabled.
-    Phase 4: mTLS only (HMAC code path removed).
+    Extracts SPIFFE ID from the peer's X.509 SVID certificate.
+    HMAC is completely removed — only mTLS is accepted.
 
     The validator is stateless — create one per service and reuse.
     """
@@ -236,251 +228,96 @@ class DualAuthValidator:
         self.service_name = service_name
         self.allowed_callers = allowed_callers or set()
         self.flags = flags or get_spiffe_feature_flags()
-        
-        # Log phase on initialization
+
         logger.info(
             "spiffe_validator_initialized",
             service=service_name,
-            phase=self.flags.migration_phase.value,
+            phase=self.flags.migration_phase,
             spiffe_enabled=self.flags.feature_spiffe_mtls,
             strict_mode=self.flags.spiffe_mtls_strict_mode,
-            hmac_fallback=self.flags.hmac_fallback_enabled,
         )
 
     def validate(
         self,
-        headers: Dict[str, str],
+        peer_cert_der: Optional[bytes] = None,
+        spiffe_id: Optional[str] = None,
         method: str = "",
         path: str = "",
-        hmac_validator: Optional[callable] = None,
     ) -> AuthResult:
         """
-        Validate a request using the dual-auth strategy.
+        Validate a request using mTLS.
 
         Args:
-            headers: Request headers dict.
+            peer_cert_der: DER-encoded peer certificate from TLS handshake.
+                          If provided, SPIFFE ID is extracted from the cert.
+            spiffe_id: Pre-extracted SPIFFE ID (e.g., from Gateway forwarding).
+                      Only used if peer_cert_der is not provided.
             method: HTTP method (for logging).
             path: Request path (for logging).
-            hmac_validator: Callable that returns True if HMAC is valid.
-                           Signature: hmac_validator(headers, method, path) -> bool
-                           NOTE: In Phase 3+, this parameter is ignored.
 
         Returns:
             AuthResult indicating whether the request is authenticated.
         """
-        flags = self.flags
-        phase = flags.migration_phase
-
-        # Phase 4: HMAC is completely removed - reject any HMAC attempt
-        if phase == MigrationPhase.PHASE_4:
-            if hmac_validator is not None:
-                logger.warning(
-                    "hmac_attempted_in_phase4",
-                    service=self.service_name,
-                    path=path,
-                    msg="HMAC validation attempted but HMAC is removed in Phase 4",
-                )
-            # Only accept mTLS
-            return self._validate_mtls_only(headers, method, path)
-
-        # Phase 3: Strict mTLS required, HMAC disabled
-        if phase == MigrationPhase.PHASE_3:
-            return self._validate_phase3(headers, method, path)
-
-        # Phase 2: Dual-auth (mTLS priority, HMAC fallback)
-        return self._validate_phase2(headers, method, path, hmac_validator)
-
-    def _validate_mtls_only(self, headers: Dict[str, str], method: str, path: str) -> AuthResult:
-        """Phase 4: Only mTLS accepted. HMAC completely removed."""
         if not self.flags.feature_spiffe_mtls:
             logger.error(
                 "spiffe_disabled_in_phase4",
                 service=self.service_name,
-                msg="SPIFFE is disabled but we're in Phase 4 - no auth method available",
+                msg="SPIFFE is disabled but we're in Phase 4",
             )
             return AuthResult(
                 authenticated=False,
-                method=AuthMethod.NONE,
+                method="none",
                 reason="No auth method available (Phase 4 but SPIFFE disabled)",
             )
 
-        spiffe_id = extract_spiffe_id_from_headers(headers)
-        if not spiffe_id:
+        # Extract SPIFFE ID from certificate if provided
+        extracted_spiffe_id = None
+        if peer_cert_der:
+            extracted_spiffe_id = extract_spiffe_id_from_cert(peer_cert_der)
+        elif spiffe_id and _is_valid_spiffe_id(spiffe_id):
+            extracted_spiffe_id = spiffe_id
+
+        if not extracted_spiffe_id:
             logger.warning(
-                "no_spiffe_id_in_phase4",
+                "no_spiffe_id",
                 service=self.service_name,
                 path=path,
+                has_cert=peer_cert_der is not None,
             )
             return AuthResult(
                 authenticated=False,
-                method=AuthMethod.NONE,
-                reason="mTLS required (Phase 4) but no valid SPIFFE identity found",
+                method="none",
+                reason="mTLS required but no valid SPIFFE identity found",
             )
 
         # Validate caller if enabled
         if self.flags.caller_svid_validation and self.allowed_callers:
-            if spiffe_id not in self.allowed_callers:
+            if extracted_spiffe_id not in self.allowed_callers:
                 logger.warning(
-                    "spiffe_caller_rejected_phase4",
+                    "spiffe_caller_rejected",
                     service=self.service_name,
-                    spiffe_id=spiffe_id,
+                    spiffe_id=extracted_spiffe_id,
                     allowed=list(self.allowed_callers),
                 )
                 return AuthResult(
                     authenticated=False,
-                    method=AuthMethod.SPIFFE_MTLS,
-                    spiffe_id=spiffe_id,
-                    reason=f"SPIFFE ID {spiffe_id} not in allowed callers",
+                    method="spiffe",
+                    spiffe_id=extracted_spiffe_id,
+                    reason=f"SPIFFE ID {extracted_spiffe_id} not in allowed callers",
                 )
 
         logger.debug(
-            "spiffe_auth_passed_phase4",
+            "spiffe_auth_passed",
             service=self.service_name,
-            spiffe_id=spiffe_id,
+            spiffe_id=extracted_spiffe_id,
         )
         if self.flags.auth_metrics_enabled:
-            _record_auth_metric("spiffe_phase4", self.service_name)
+            _record_auth_metric("spiffe", self.service_name)
+
         return AuthResult(
             authenticated=True,
-            method=AuthMethod.SPIFFE_MTLS,
-            spiffe_id=spiffe_id,
-        )
-
-    def _validate_phase3(self, headers: Dict[str, str], method: str, path: str) -> AuthResult:
-        """Phase 3: Strict mTLS required. HMAC disabled but not removed."""
-        if not self.flags.feature_spiffe_mtls:
-            logger.error(
-                "spiffe_disabled_in_phase3",
-                service=self.service_name,
-                msg="SPIFFE is disabled but we're in Phase 3 - no auth method available",
-            )
-            return AuthResult(
-                authenticated=False,
-                method=AuthMethod.NONE,
-                reason="No auth method available (Phase 3 but SPIFFE disabled)",
-            )
-
-        spiffe_id = extract_spiffe_id_from_headers(headers)
-        if not spiffe_id:
-            logger.warning(
-                "no_spiffe_id_in_phase3",
-                service=self.service_name,
-                path=path,
-            )
-            return AuthResult(
-                authenticated=False,
-                method=AuthMethod.NONE,
-                reason="mTLS required (Phase 3) but no valid SPIFFE identity found",
-            )
-
-        # Validate caller if enabled
-        if self.flags.caller_svid_validation and self.allowed_callers:
-            if spiffe_id not in self.allowed_callers:
-                logger.warning(
-                    "spiffe_caller_rejected_phase3",
-                    service=self.service_name,
-                    spiffe_id=spiffe_id,
-                    allowed=list(self.allowed_callers),
-                )
-                return AuthResult(
-                    authenticated=False,
-                    method=AuthMethod.SPIFFE_MTLS,
-                    spiffe_id=spiffe_id,
-                    reason=f"SPIFFE ID {spiffe_id} not in allowed callers",
-                )
-
-        logger.debug(
-            "spiffe_auth_passed_phase3",
-            service=self.service_name,
-            spiffe_id=spiffe_id,
-        )
-        if self.flags.auth_metrics_enabled:
-            _record_auth_metric("spiffe_phase3", self.service_name)
-        return AuthResult(
-            authenticated=True,
-            method=AuthMethod.SPIFFE_MTLS,
-            spiffe_id=spiffe_id,
-        )
-
-    def _validate_phase2(
-        self,
-        headers: Dict[str, str],
-        method: str,
-        path: str,
-        hmac_validator: Optional[callable],
-    ) -> AuthResult:
-        """Phase 2: Dual-auth (mTLS priority, HMAC fallback)."""
-        # Try mTLS first if enabled
-        if self.flags.feature_spiffe_mtls:
-            spiffe_id = extract_spiffe_id_from_headers(headers)
-            if spiffe_id:
-                # Validate caller identity if caller validation is enabled
-                if self.flags.caller_svid_validation and self.allowed_callers:
-                    if spiffe_id not in self.allowed_callers:
-                        logger.warning(
-                            "spiffe_caller_rejected",
-                            service=self.service_name,
-                            spiffe_id=spiffe_id,
-                            allowed=list(self.allowed_callers),
-                        )
-                        # In Phase 2, fall through to HMAC on caller rejection
-                    else:
-                        logger.debug(
-                            "spiffe_auth_passed",
-                            service=self.service_name,
-                            spiffe_id=spiffe_id,
-                        )
-                        if self.flags.auth_metrics_enabled:
-                            _record_auth_metric("spiffe", self.service_name)
-                        return AuthResult(
-                            authenticated=True,
-                            method=AuthMethod.SPIFFE_MTLS,
-                            spiffe_id=spiffe_id,
-                        )
-                else:
-                    # No caller validation — accept any valid SPIFFE ID under trust domain
-                    logger.debug(
-                        "spiffe_auth_passed_no_caller_check",
-                        service=self.service_name,
-                        spiffe_id=spiffe_id,
-                    )
-                    if self.flags.auth_metrics_enabled:
-                        _record_auth_metric("spiffe", self.service_name)
-                    return AuthResult(
-                        authenticated=True,
-                        method=AuthMethod.SPIFFE_MTLS,
-                        spiffe_id=spiffe_id,
-                    )
-
-        # HMAC fallback (Phase 2 only)
-        if hmac_validator and self.flags.hmac_fallback_enabled:
-            try:
-                if hmac_validator(headers, method, path):
-                    logger.debug(
-                        "hmac_auth_passed",
-                        service=self.service_name,
-                        path=path,
-                    )
-                    if self.flags.auth_metrics_enabled:
-                        _record_auth_metric("hmac", self.service_name)
-                    return AuthResult(
-                        authenticated=True,
-                        method=AuthMethod.HMAC,
-                    )
-            except Exception as e:
-                logger.error(
-                    "hmac_validation_error",
-                    service=self.service_name,
-                    error=str(e),
-                )
-
-        if self.flags.auth_metrics_enabled:
-            _record_auth_metric("rejected", self.service_name)
-
-        return AuthResult(
-            authenticated=False,
-            method=AuthMethod.NONE,
-            reason="Authentication failed",
+            method="spiffe",
+            spiffe_id=extracted_spiffe_id,
         )
 
 
@@ -505,51 +342,63 @@ def get_auth_metrics() -> Dict[str, int]:
 # ---------------------------------------------------------------------------
 # Allowed Callers Registry
 # ---------------------------------------------------------------------------
+# Loaded from INFRA/spire/communication_rules.json at startup.
+# Falls back to hardcoded defaults if the file is not found.
 
-# Default allowed callers per service — used when CALLER_SVID_VALIDATION=true
-DEFAULT_ALLOWED_CALLERS: Dict[str, Set[str]] = {
-    "backend": {
-        "spiffe://smsly.cloud/service/gateway",
-        "spiffe://smsly.cloud/service/platform-api",
-    },
-    "platform-api": {
-        "spiffe://smsly.cloud/service/gateway",
-        "spiffe://smsly.cloud/service/backend",
-    },
-    "identity": {
-        "spiffe://smsly.cloud/service/gateway",
-        "spiffe://smsly.cloud/service/backend",
-        "spiffe://smsly.cloud/service/platform-api",
-        "spiffe://smsly.cloud/service/rate-limit",
-    },
-    "audit": {
-        "spiffe://smsly.cloud/service/gateway",
-        "spiffe://smsly.cloud/service/platform-api",
-        "spiffe://smsly.cloud/service/identity",
-        "spiffe://smsly.cloud/service/backend",
-        "spiffe://smsly.cloud/service/policy",
-        "spiffe://smsly.cloud/service/rate-limit",
-    },
-    "policy": {
-        "spiffe://smsly.cloud/service/gateway",
-        "spiffe://smsly.cloud/service/platform-api",
-        "spiffe://smsly.cloud/service/rate-limit",
-    },
-    "rate-limit": {
-        "spiffe://smsly.cloud/service/gateway",
-        "spiffe://smsly.cloud/service/platform-api",
-    },
-    "email": {
-        "spiffe://smsly.cloud/service/gateway",
-        "spiffe://smsly.cloud/service/platform-api",
-    },
-    "chain": {
-        "spiffe://smsly.cloud/service/gateway",
-        "spiffe://smsly.cloud/service/platform-api",
-        "spiffe://smsly.cloud/service/backend",
-        "spiffe://smsly.cloud/service/identity",
-    },
-}
+import json as _json
+import os as _os
+from pathlib import Path as _Path
+
+def _load_communication_rules() -> Dict[str, Set[str]]:
+    """Load service communication rules from communication_rules.json."""
+    # Try multiple locations
+    candidates = [
+        _os.environ.get("COMMUNICATION_RULES_PATH", ""),
+        str(_Path(__file__).parent.parent.parent.parent.parent / "INFRA" / "spire" / "communication_rules.json"),
+        "/opt/spire/communication_rules.json",
+    ]
+    
+    rules_file = None
+    for candidate in candidates:
+        if candidate and _Path(candidate).is_file():
+            rules_file = candidate
+            break
+    
+    if not rules_file:
+        return _FALLBACK_ALLOWED_CALLERS
+    
+    try:
+        with open(rules_file) as f:
+            data = _json.load(f)
+        
+        # Resolve {trust_domain} placeholder
+        trust_domain = _os.environ.get("SPIFFE_TRUST_DOMAIN", "trulay.co")
+        
+        rules = data.get("rules", {})
+        result: Dict[str, Set[str]] = {}
+        
+        for svc_name, svc_rules in rules.items():
+            callers = svc_rules.get("allowed_callers", [])
+            # Resolve placeholders and filter wildcards
+            resolved = set()
+            for caller in callers:
+                if caller == "*":
+                    resolved.add("*")
+                else:
+                    resolved.add(caller.replace("{trust_domain}", trust_domain))
+            result[svc_name] = resolved
+        
+        return result
+    except Exception:
+        return _FALLBACK_ALLOWED_CALLERS
+
+
+# Hardcoded fallback (used when communication_rules.json is not available)
+# This is intentionally empty — rules should be configured per-deployment
+_FALLBACK_ALLOWED_CALLERS: Dict[str, Set[str]] = {}
+
+# Load rules at module import time
+DEFAULT_ALLOWED_CALLERS = _load_communication_rules()
 
 
 def get_allowed_callers(service_name: str) -> Set[str]:
@@ -561,16 +410,14 @@ def get_allowed_callers(service_name: str) -> Set[str]:
 # Gateway Identity Forwarding Helper
 # ---------------------------------------------------------------------------
 
-def build_spiffe_forwarding_headers(
-    caller_spiffe_id: str,
-) -> Dict[str, str]:
+def build_spiffe_forwarding_headers(caller_spiffe_id: str) -> Dict[str, str]:
     """
-    Build headers for the Gateway to forward SPIFFE identity to downstream services.
+    Build headers for the Gateway to forward SPIFFE identity.
 
     The Gateway extracts the caller's SPIFFE ID from the mTLS connection
     and injects it into these headers for downstream services to verify.
     """
     return {
-        SPIFFE_HEADER_ID: caller_spiffe_id,
+        "X-SPIFFE-ID": caller_spiffe_id,
         "X-SPIFFE-Forwarded": "true",
     }

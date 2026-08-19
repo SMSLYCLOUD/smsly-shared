@@ -32,7 +32,7 @@ class SMSLYVault:
         token: Optional[str] = None,
         mount_point: str = "smsly"
     ):
-        self.url = url or os.environ.get("VAULT_ADDR", "https://vault.smsly.cloud")
+        self.url = url or os.environ.get("VAULT_ADDR", "https://vault.trulay.co")
         self.token = token or os.environ.get("VAULT_TOKEN")
         self.mount_point = mount_point
         self._client: Optional[hvac.Client] = None

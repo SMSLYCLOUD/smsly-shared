@@ -1,13 +1,11 @@
 """
 Auth Middleware
 ===============
-SPIFFE mTLS request authentication middleware.
-
-Validates that incoming requests carry a valid SPIFFE identity from
-the Security Gateway via mTLS. All traffic to internal services MUST
-flow through the gateway — this middleware enforces that contract.
-
 Phase 4: HMAC removed. Only SPIFFE mTLS accepted.
+
+Validates that incoming requests carry a valid SPIFFE X.509 SVID
+from the mTLS TLS handshake. All traffic to internal services MUST
+flow through the gateway — this middleware enforces that contract.
 """
 
 from fastapi import Request
@@ -19,7 +17,6 @@ try:
     from smsly_core.spiffe_auth import (
         DualAuthValidator,
         get_allowed_callers,
-        MigrationPhase,
     )
     _SPIFFE_AVAILABLE = True
 except ImportError:
@@ -33,18 +30,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
     Authenticates requests by verifying SPIFFE mTLS identity.
 
     The gateway establishes mTLS with downstream services and forwards
-    the caller's SPIFFE ID via X-SPIFFE-ID header.
+    the caller's SPIFFE ID via X-SPIFFE-ID header after verifying
+    the mTLS connection.
 
     This middleware verifies that identity before allowing the request
     to reach route handlers. Without a valid SPIFFE identity, the request
     is rejected with 401.
 
     Environment variables:
-        MIGRATION_PHASE — phase2, phase3, or phase4 (default: phase4)
+        MIGRATION_PHASE — phase4 (default)
         FEATURE_SPIFFE_MTLS — enable SPIFFE mTLS (default: true)
-        SPIFFE_MTLS_STRICT_MODE — require mTLS (default: true in phase3+)
-        CALLER_SVID_VALIDATION — validate caller identity (default: false)
-        SPIFFE_TRUST_DOMAIN — trust domain (default: smsly.cloud)
+        SPIFFE_MTLS_STRICT_MODE — require mTLS (default: true)
+        SPIFFE_TRUST_DOMAIN — trust domain (default: trulay.co)
     """
 
     def __init__(self, app, service_name: str = "unknown"):
@@ -62,7 +59,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             logger.info(
                 "auth_middleware_initialized",
                 service=service_name,
-                phase=self._spiffe_validator.flags.migration_phase.value,
+                phase=self._spiffe_validator.flags.migration_phase,
             )
         else:
             logger.error(
@@ -80,7 +77,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.url.path in ("/internal/health", "/internal/ready"):
             return await call_next(request)
 
-        # SPIFFE mTLS validation
         if not self._spiffe_validator:
             logger.error("auth_no_validator", path=request.url.path)
             return JSONResponse(
@@ -88,16 +84,30 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 content={"error": "authentication_unavailable", "detail": "Auth service not configured"}
             )
 
-        headers = {k: v for k, v in request.headers.items()}
+        # Extract SPIFFE ID from X-SPIFFE-ID header (set by Gateway after mTLS)
+        spiffe_id = request.headers.get("X-SPIFFE-ID")
+
+        # Also try to extract from TLS peer certificate
+        peer_cert_der = None
+        connection = request.scope.get("connection")
+        if connection:
+            ssl_obj = getattr(connection, "_ssl_object", None)
+            if ssl_obj:
+                try:
+                    peer_cert_der = ssl_obj.getpeercert(binary_form=True)
+                except Exception:
+                    pass
+
         result = self._spiffe_validator.validate(
-            headers=headers,
+            peer_cert_der=peer_cert_der,
+            spiffe_id=spiffe_id,
             method=request.method,
             path=request.url.path,
         )
 
         if result.authenticated:
             request.state.authenticated = True
-            request.state.auth_source = result.method.value
+            request.state.auth_source = result.method
             request.state.spiffe_id = result.spiffe_id
             return await call_next(request)
 
@@ -106,7 +116,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "auth_failed",
             path=request.url.path,
             reason=result.reason,
-            phase=self._spiffe_validator.flags.migration_phase.value,
         )
         return JSONResponse(
             status_code=401,
