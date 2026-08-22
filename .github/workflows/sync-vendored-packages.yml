@@ -1,0 +1,111 @@
+# =============================================================================
+# Sync vendored shared packages into consumer service repos
+# =============================================================================
+# Canonical sources here -> vendored copies in consumers:
+#   integration/  -> <repo>/integration/
+#   smsly-core/   -> <repo>/_vendor/smsly-core/
+#
+# Consumers (add new services by extending the matrix):
+#   - SMSLYCLOUD/smsly-security-gateway (main)
+#   - SMSLYCLOUD/smsly-platform-api     (master)
+#   - SMSLYCLOUD/smsly-identity-service (master)
+#
+# SETUP (one-time):
+#   Create a classic PAT with repo scope (or fine-grained PAT with
+#   Contents: read/write on the consumer repos above) and add it as the
+#   SYNC_TOKEN secret on this repository.
+#
+# Pushing to consumer repos triggers their own CI/CD (Grid auto-deploy).
+# =============================================================================
+
+name: Sync vendored packages
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "integration/**"
+      - "smsly-core/**"
+  schedule:
+    - cron: "0 3 * * 1" # weekly drift repair (fixes hand-edits in vendored copies)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-vendored-packages
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - repo: smsly-security-gateway
+            branch: main
+          - repo: smsly-platform-api
+            branch: master
+          - repo: smsly-identity-service
+            branch: master
+    steps:
+      - name: Checkout shared packages
+        uses: actions/checkout@v4
+
+      - name: Sync packages into ${{ matrix.repo }}
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SYNC_TOKEN}" ]; then
+            echo "::error::SYNC_TOKEN secret is not configured on this repository."
+            exit 1
+          fi
+
+          git clone --depth 1 --branch "${{ matrix.branch }}" \
+            "https://x-access-token:${SYNC_TOKEN}@github.com/SMSLYCLOUD/${{ matrix.repo }}.git" consumer
+
+          mirror() {
+            mkdir -p "consumer/$2"
+            rsync -a --delete \
+              --exclude '__pycache__/' \
+              --exclude '.ruff_cache/' \
+              --exclude '.pytest_cache/' \
+              "$1/" "consumer/$2/"
+          }
+
+          mirror integration integration
+          mirror smsly-core _vendor/smsly-core
+
+          cd consumer
+          git config user.name  "smsly-shared-sync[bot]"
+          git config user.email "smsly-shared-sync[bot]@users.noreply.github.com"
+
+          SHORT_SHA="${SOURCE_SHA:0:7}"
+          git add -A integration _vendor/smsly-core
+          if git diff --cached --quiet; then
+            echo "::notice::${{ matrix.repo }} already up to date with smsly-shared@${SHORT_SHA}"
+            exit 0
+          fi
+
+          git commit -m "chore(sync): update vendored shared packages from smsly-shared@${SHORT_SHA}"
+
+          pushed=0
+          for attempt in 1 2 3; do
+            if git push origin HEAD:"${{ matrix.branch }}"; then
+              echo "::notice::Synced shared packages to ${{ matrix.repo }} (from ${SHORT_SHA})"
+              pushed=1
+              break
+            fi
+            echo "::warning::Push attempt ${attempt} failed, rebasing and retrying..."
+            git pull --rebase origin "${{ matrix.branch }}" || true
+          done
+
+          if [ "${pushed}" -ne 1 ]; then
+            echo "::error::Failed to push sync commit to ${{ matrix.repo }} after 3 attempts."
+            exit 1
+          fi
