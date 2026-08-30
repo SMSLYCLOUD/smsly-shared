@@ -90,8 +90,29 @@ else:
     _env = os.getenv("ENVIRONMENT", "development").lower()
     FAIL_CLOSED_DEFAULT = _env in ("production", "prod", "staging")
 
-# Fallback buffer
-FALLBACK_DIR = Path(os.getenv("AUDIT_FALLBACK_DIR", "/tmp/smsly_audit_fallback"))
+# Fallback buffer — Grid's gVisor is read-only at /var/log, so auto-fallback to /app/tmp if needed
+def _resolve_fallback_dir() -> Path:
+    raw = os.getenv("AUDIT_FALLBACK_DIR", "/app/tmp/audit_fallback")
+    # If env explicitly set to read-only /var/log, ignore and use /app/tmp
+    if raw.startswith("/var/log"):
+        raw = "/app/tmp/audit_fallback"
+    p = Path(raw)
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+        # Test writability
+        test = p / ".writetest"
+        test.touch(exist_ok=True)
+        test.unlink(missing_ok=True)
+        return p
+    except Exception:
+        fallback = Path("/app/tmp/audit_fallback")
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return fallback
+
+FALLBACK_DIR = _resolve_fallback_dir()
 FALLBACK_FILE = FALLBACK_DIR / "audit_fallback.jsonl"
 FALLBACK_MAX_BYTES = int(os.getenv("AUDIT_FALLBACK_MAX_MB", "50")) * 1024 * 1024
 

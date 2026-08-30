@@ -27,11 +27,15 @@ try:
     from smsly_core.spiffe_auth import (
         DualAuthValidator,
         get_allowed_callers,
-        MigrationPhase,
     )
+    try:
+        from smsly_core.spiffe_auth import MigrationPhase  # noqa: F401, optional compat
+    except ImportError:
+        MigrationPhase = None  # type: ignore
     _SPIFFE_AVAILABLE = True
 except ImportError:
     _SPIFFE_AVAILABLE = False
+    MigrationPhase = None  # type: ignore
 
 logger = structlog.get_logger(__name__)
 
@@ -84,10 +88,14 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
                     service_name=self.service_name,
                     allowed_callers=allowed,
                 )
+                _phase = getattr(
+                    self._spiffe_validator.flags.migration_phase, "value",
+                    self._spiffe_validator.flags.migration_phase,
+                )
                 logger.info(
                     "direct_access_initialized",
                     service=self.service_name,
-                    phase=self._spiffe_validator.flags.migration_phase.value,
+                    phase=_phase,
                 )
             except Exception as e:
                 logger.error("direct_access_init_failed", error=str(e))

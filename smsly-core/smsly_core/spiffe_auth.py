@@ -32,6 +32,7 @@ Usage:
 
 from __future__ import annotations
 
+import enum
 import logging
 import os
 from dataclasses import dataclass
@@ -55,6 +56,17 @@ SPIFFE_OID_DOTTED = "1.3.6.1.4.1.57264.1.1"
 
 
 # ---------------------------------------------------------------------------
+# Migration Phase Enum (backward compat for .value callers)
+# ---------------------------------------------------------------------------
+
+class MigrationPhase(str, enum.Enum):
+    """Migration phase — str+Enum so both `phase` and `phase.value` work."""
+    PHASE2 = "phase2"
+    PHASE3 = "phase3"
+    PHASE4 = "phase4"
+
+
+# ---------------------------------------------------------------------------
 # Feature Flags (Phase 4 only)
 # ---------------------------------------------------------------------------
 
@@ -70,10 +82,15 @@ class SPIFFEFeatureFlags:
     auth_metrics_enabled: bool = False
     spiffe_identity_forwarding: bool = True
     caller_svid_validation: bool = True
-    migration_phase: str = "phase4"
+    migration_phase: MigrationPhase = MigrationPhase.PHASE4  # type: ignore[assignment]
 
     @classmethod
     def from_env(cls) -> "SPIFFEFeatureFlags":
+        _raw_phase = os.getenv("MIGRATION_PHASE", "phase4").lower()
+        try:
+            _phase = MigrationPhase(_raw_phase)
+        except ValueError:
+            _phase = MigrationPhase.PHASE4
         return cls(
             feature_spiffe_mtls=_env_bool("FEATURE_SPIFFE_MTLS", True),
             spiffe_mtls_strict_mode=_env_bool("SPIFFE_MTLS_STRICT_MODE", True),
@@ -81,7 +98,7 @@ class SPIFFEFeatureFlags:
             auth_metrics_enabled=_env_bool("AUTH_METRICS_ENABLED", False),
             spiffe_identity_forwarding=_env_bool("SPIFFE_IDENTITY_FORWARDING", True),
             caller_svid_validation=_env_bool("CALLER_SVID_VALIDATION", True),
-            migration_phase=os.getenv("MIGRATION_PHASE", "phase4"),
+            migration_phase=_phase,  # type: ignore[arg-type]
         )
 
 

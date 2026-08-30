@@ -9,6 +9,12 @@
 #   - SMSLYCLOUD/smsly-security-gateway (main)
 #   - SMSLYCLOUD/smsly-platform-api     (master)
 #   - SMSLYCLOUD/smsly-identity-service (master)
+#   - SMSLYCLOUD/smsly-backend          (main)
+#   - SMSLYCLOUD/smsly-policy-service   (master)
+#   - SMSLYCLOUD/smsly-audit-log-service (master)
+#   - SMSLYCLOUD/smsly-rate-limit-service (master)
+#   - SMSLYCLOUD/smsly-email            (main)
+#   - SMSLYCLOUD/smsly-transaction-chain (main)
 #
 # SETUP (one-time) — GitHub App auth (no personal tokens involved):
 #   1. Org Settings -> Developer settings -> GitHub Apps -> New GitHub App
@@ -59,6 +65,18 @@ jobs:
             branch: master
           - repo: smsly-identity-service
             branch: master
+          - repo: smsly-backend
+            branch: main
+          - repo: smsly-policy-service
+            branch: master
+          - repo: smsly-audit-log-service
+            branch: master
+          - repo: smsly-rate-limit-service
+            branch: master
+          - repo: smsly-email
+            branch: main
+          - repo: smsly-transaction-chain
+            branch: main
     steps:
       - name: Checkout shared packages
         uses: actions/checkout@v4
