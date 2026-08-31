@@ -43,7 +43,7 @@ class InternalContext:
     user_id: Optional[str] = None
     user_email: Optional[str] = None
     organization_id: Optional[str] = None
-    account_type: str = "casual"
+    account_type: str = "developer"
     request_id: Optional[str] = None
     is_internal: bool = False
     spiffe_id: Optional[str] = None
@@ -123,7 +123,7 @@ class InternalAuthMiddleware(BaseHTTPMiddleware):
             user_id=request.headers.get("X-User-ID"),
             user_email=request.headers.get("X-User-Email"),
             organization_id=request.headers.get("X-Organization-ID"),
-            account_type=request.headers.get("X-Account-Type", "casual"),
+            account_type=request.headers.get("X-Account-Type", "developer"),
             request_id=request.headers.get("X-Request-ID"),
             is_internal=True,
             spiffe_id=result.spiffe_id,
@@ -191,7 +191,6 @@ class AccountTypeRateLimiter:
     """
     
     DEFAULT_LIMITS = {
-        "casual": {"requests_per_second": 5, "requests_per_minute": 60},
         "developer": {"requests_per_second": 20, "requests_per_minute": 300},
         "enterprise": {"requests_per_second": 100, "requests_per_minute": 1000},
         "reseller": {"requests_per_second": 50, "requests_per_minute": 500},
@@ -208,7 +207,7 @@ class AccountTypeRateLimiter:
             return False  # Fail-closed
         
         account_type = context.account_type
-        limits = self.limits.get(account_type, self.limits["casual"])
+        limits = self.limits.get(account_type, self.limits["developer"])
         
         # Use user_id or organization_id as key
         key_base = context.organization_id or context.user_id or "anonymous"
