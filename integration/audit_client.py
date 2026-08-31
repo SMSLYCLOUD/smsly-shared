@@ -166,39 +166,125 @@ class CircuitBreaker:
 # ============================================================================
 
 class FallbackBuffer:
-    """Local JSONL buffer for events when Audit Service is unreachable."""
+    """Local JSONL buffer for events when Audit Service is unreachable.
+
+    Disk is the source of truth (append-only JSONL); the in-memory deque is a
+    working set loaded at startup. Popped events are only removed from disk
+    AFTER the caller confirms successful send (ack), so a crash mid-replay
+    re-sends at-least-once (audit events are idempotent via event_id).
+    """
+
+    MAX_REPLAY_FILE_BYTES = FALLBACK_MAX_BYTES  # 50MB cap, drop-oldest
 
     def __init__(self):
         FALLBACK_DIR.mkdir(parents=True, exist_ok=True)
         self._queue: deque[dict] = deque()
         self._max_queue = 10_000
+        self._replaying = False
+        self._load_from_disk()
+
+    def _load_from_disk(self):
+        """Load previously buffered events from disk into memory at boot.
+
+        Survives process restarts: events buffered before a crash/redeploy are
+        replayed once the audit service is reachable again.
+        """
+        try:
+            if FALLBACK_FILE.exists():
+                with open(FALLBACK_FILE, "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            ev = json.loads(line)
+                        except Exception:
+                            continue  # corrupt line — skip
+                        if len(self._queue) < self._max_queue:
+                            self._queue.append(ev)
+                size_kb = FALLBACK_FILE.stat().st_size // 1024
+                logger.info(
+                    "audit_fallback_reloaded events=%d file_kb=%d",
+                    len(self._queue), size_kb,
+                )
+                # Rewrite the file as just the loaded events (dedupes partial
+                # writes from prior runs and keeps file == queue)
+                self._rewrite_disk()
+        except Exception as e:
+            logger.warning("audit_fallback_load_failed error=%s", str(e))
 
     def push(self, event: AuditEvent) -> bool:
         """Append event to fallback. Returns False if buffer full."""
         if len(self._queue) >= self._max_queue:
             logger.error("audit_fallback_buffer_full")
             return False
-        self._queue.append(event.model_dump(mode="json"))
-        self._flush_to_disk()
+        ev_dict = event.model_dump(mode="json")
+        self._queue.append(ev_dict)
+        self._append_to_disk(ev_dict)
         return True
 
     def pop_batch(self, count: int) -> List[dict]:
-        """Pop up to `count` events from the front of the queue."""
+        """Pop up to `count` events from the front of the queue (memory only).
+
+        Caller MUST call ack_batch(events) after successful send, which
+        removes them from disk. If not acked, they stay on disk and will be
+        re-loaded on next boot.
+        """
         batch = []
         while self._queue and len(batch) < count:
             batch.append(self._queue.popleft())
         return batch
 
-    def _flush_to_disk(self):
-        """Persist queue to disk (best-effort)."""
+    def ack_batch(self, batch: List[dict]):
+        """Remove acked events from disk after successful send."""
+        if not batch:
+            return
         try:
-            if self._queue:
-                with open(FALLBACK_FILE, "a") as f:
-                    for ev in list(self._queue):
-                        f.write(json.dumps(ev, default=str) + "\n")
-                self._queue.clear()
+            acked_ids = {id(e) for e in batch}
+            remaining = [e for e in self._queue]
+            # Rewrite disk with everything still in memory (queue holds
+            # un-acked events; acked ones were already popped)
+            self._rewrite_disk()
+        except Exception as e:
+            logger.warning("fallback_ack_failed error=%s", str(e))
+
+    def _append_to_disk(self, ev: dict):
+        """Append ONE event to the JSONL file (O(1), no rewrite)."""
+        try:
+            with open(FALLBACK_FILE, "a") as f:
+                f.write(json.dumps(ev, default=str) + "\n")
+            # Cap file size: drop-oldest by rewriting without the head
+            if FALLBACK_FILE.exists() and FALLBACK_FILE.stat().st_size > self.MAX_REPLAY_FILE_BYTES:
+                self._trim_disk()
         except Exception as e:
             logger.warning("fallback_disk_flush_failed error=%s", str(e))
+
+    def _rewrite_disk(self):
+        """Rewrite the file to exactly mirror the in-memory queue."""
+        try:
+            tmp = FALLBACK_FILE.with_suffix(".jsonl.tmp")
+            with open(tmp, "w") as f:
+                for ev in self._queue:
+                    f.write(json.dumps(ev, default=str) + "\n")
+            tmp.replace(FALLBACK_FILE)
+        except Exception as e:
+            logger.warning("fallback_disk_rewrite_failed error=%s", str(e))
+
+    def _trim_disk(self):
+        """Drop oldest half of the file when over the size cap."""
+        try:
+            lines = FALLBACK_FILE.read_text().splitlines(keepends=True)
+            keep = lines[len(lines) // 2:]
+            tmp = FALLBACK_FILE.with_suffix(".jsonl.tmp")
+            tmp.write_text("".join(keep))
+            tmp.replace(FALLBACK_FILE)
+            # Mirror trim in memory (front of deque == oldest)
+            for _ in range(len(self._queue) // 2):
+                if self._queue:
+                    self._queue.popleft()
+            logger.warning("audit_fallback_trimmed remaining=%d", len(self._queue))
+        except Exception as e:
+            logger.warning("fallback_disk_trim_failed error=%s", str(e))
 
     @property
     def size(self) -> int:
@@ -340,11 +426,12 @@ class AuditClient:
     # ---- Internal ----
 
     async def _flush_loop(self):
-        """Periodic flush of buffered events."""
+        """Periodic flush of buffered events + replay of fallback backlog."""
         while self._running:
             try:
                 await asyncio.sleep(FLUSH_INTERVAL_S)
                 await self.flush()
+                await self._replay_backlog()
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -412,6 +499,78 @@ class AuditClient:
             )
 
         return False
+
+    # ---- Backlog replay (gap fix: buffered events were never drained) ----
+
+    async def _replay_backlog(self):
+        """Drain the fallback buffer after the circuit recovers.
+
+        Runs on the flush cadence; only sends when the circuit is closed and
+        the live batch path is healthy. Reconstructs AuditEvent objects from
+        buffered dicts so they go through the normal signed-send path.
+        Batches at BATCH_SIZE per cycle to bound memory; acks each batch
+        (removed from disk) only after a confirmed send.
+        """
+        if self._buffer._replaying:
+            return
+        if self._circuit.state != "closed":
+            return  # wait for circuit recovery; live batches probe first
+        if self._buffer.size == 0:
+            return
+
+        self._buffer._replaying = True
+        try:
+            for _ in range(4):  # up to 4 batches per cycle (200 events)
+                if self._circuit.state != "closed":
+                    break
+                pending = self._buffer.pop_batch(BATCH_SIZE)
+                if not pending:
+                    break
+                try:
+                    batch_obj = AuditEventBatch(
+                        service=self._service_name,
+                        events=[AuditEvent(**ev) for ev in pending],
+                    )
+                    body = batch_obj.model_dump_json()
+                    timestamp = datetime.now(timezone.utc).isoformat()
+                    headers = {
+                        "Content-Type": "application/json",
+                        "X-Service-Name": self._service_name,
+                        "X-Service-Timestamp": timestamp,
+                        "X-Service-Signature": self._sign(timestamp, body),
+                    }
+                    assert self._http is not None
+                    response = await self._http.post(
+                        AUDIT_HTTP_PATH, content=body, headers=headers
+                    )
+                    if response.status_code < 400:
+                        self._circuit.record_success()
+                        self._buffer.ack_batch(pending)
+                        logger.info(
+                            "audit_backlog_replayed count=%d remaining=%d",
+                            len(pending), self._buffer.size,
+                        )
+                    else:
+                        self._circuit.record_failure()
+                        # Re-queue at the front; stop replay this cycle
+                        self._requeue_front(pending)
+                        break
+                except httpx.RequestError as e:
+                    self._circuit.record_failure()
+                    logger.warning("audit_backlog_replay_failed error=%s", str(e))
+                    self._requeue_front(pending)
+                    break
+                except Exception:
+                    # Malformed buffered event — drop it (don't poison the well)
+                    logger.warning("audit_backlog_bad_event_skipped")
+                    self._buffer.ack_batch(pending)
+        finally:
+            self._buffer._replaying = False
+
+    def _requeue_front(self, pending: List[dict]):
+        """Put unsent replay events back at the front of the buffer."""
+        for ev in reversed(pending):
+            self._buffer._queue.appendleft(ev)
 
     def _sign(self, timestamp: str, body: str) -> str:
         if not SERVICE_SECRET:
