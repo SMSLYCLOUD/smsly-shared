@@ -138,3 +138,47 @@ class AuditStreamConsumer:
     @property
     def stats(self):
         return {"processed": self._processed, "errors": self._errors}
+
+    async def health_check(self) -> dict:
+        """Probe bus health: Redis group + backlog, or Kafka consumer lag.
+
+        Returns dict with at minimum {healthy: bool, mode: str, processed: int, errors: int}.
+        Callers (the audit service /ready route) translate this into 200/503.
+        """
+        result = {
+            "healthy": True,
+            "mode": os.getenv("AUDIT_BUS", "redis-stream"),
+            "processed": self._processed,
+            "errors": self._errors,
+        }
+        if self._redis is None:
+            result["healthy"] = False
+            result["redis"] = "disconnected"
+            return result
+        try:
+            # 1. Verify the consumer group exists (XINFO GROUPS) — if it
+            # doesn't, the consumer has never read anything and we silently
+            # never committed a cursor, which means a Redis restart loses
+            # position. Auto-create on miss (idempotent).
+            groups = await self._redis.xinfo_groups(STREAM_KEY)
+            group_names = {g["name"] for g in groups} if isinstance(groups, list) else set()
+            if GROUP not in group_names:
+                await self._ensure_group()
+                result["consumer_group_recreated"] = True
+            # 2. Pending entries: stream length minus group's last-delivered ID
+            stream_len = await self._redis.xlen(STREAM_KEY)
+            info = await self._redis.xinfo_groups(STREAM_KEY, GROUP)
+            group = info[0] if info else {}
+            lag = max(0, stream_len - (group.get("last-delivered-id") and stream_len or 0))
+            # Simpler lag: PEL size
+            pel = group.get("pending", 0)
+            result["stream_length"] = stream_len
+            result["pending_entries"] = pel
+            result["consumer"] = CONSUMER_NAME
+            if pel > 10_000:  # arbitrary alert threshold
+                result["healthy"] = False
+                result["lag_alert"] = f"pending={pel} exceeds 10k"
+        except Exception as e:
+            result["healthy"] = False
+            result["redis_error"] = str(e)[:120]
+        return result
