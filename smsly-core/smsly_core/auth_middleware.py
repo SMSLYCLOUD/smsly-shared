@@ -29,13 +29,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """
     Authenticates requests by verifying SPIFFE mTLS identity.
 
-    The gateway establishes mTLS with downstream services and forwards
-    the caller's SPIFFE ID via X-SPIFFE-ID header after verifying
-    the mTLS connection.
-
-    This middleware verifies that identity before allowing the request
-    to reach route handlers. Without a valid SPIFFE identity, the request
-    is rejected with 401.
+    The gateway establishes mTLS with downstream services. This middleware
+    extracts the peer's X.509 SVID from the TLS handshake and validates it.
+    X-SPIFFE-ID headers are NOT trusted (forgeable plaintext) — requests
+    without a valid mTLS identity are rejected with 401.
 
     Environment variables:
         MIGRATION_PHASE — phase4 (default)
@@ -84,10 +81,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 content={"error": "authentication_unavailable", "detail": "Auth service not configured"}
             )
 
-        # Extract SPIFFE ID from X-SPIFFE-ID header (set by Gateway after mTLS)
-        spiffe_id = request.headers.get("X-SPIFFE-ID")
-
-        # Also try to extract from TLS peer certificate
+        # STRICT MODE: identity comes ONLY from the mTLS peer certificate.
+        # X-SPIFFE-ID headers are attacker-forgeable plaintext and are ignored.
         peer_cert_der = None
         connection = request.scope.get("connection")
         if connection:
@@ -100,7 +95,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         result = self._spiffe_validator.validate(
             peer_cert_der=peer_cert_der,
-            spiffe_id=spiffe_id,
             method=request.method,
             path=request.url.path,
         )

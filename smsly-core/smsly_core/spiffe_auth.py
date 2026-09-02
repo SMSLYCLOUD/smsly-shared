@@ -264,11 +264,15 @@ class DualAuthValidator:
         """
         Validate a request using mTLS.
 
+        STRICT MODE (Phase 4): identity is extracted ONLY from the peer's
+        X.509 SVID certificate presented in the TLS handshake. The
+        `spiffe_id` parameter is retained for interface compatibility but
+        is IGNORED — headers are attacker-forgeable and must never be
+        trusted as an identity source.
+
         Args:
             peer_cert_der: DER-encoded peer certificate from TLS handshake.
-                          If provided, SPIFFE ID is extracted from the cert.
-            spiffe_id: Pre-extracted SPIFFE ID (e.g., from Gateway forwarding).
-                      Only used if peer_cert_der is not provided.
+            spiffe_id: IGNORED (kept for backward call-site compatibility).
             method: HTTP method (for logging).
             path: Request path (for logging).
 
@@ -287,12 +291,10 @@ class DualAuthValidator:
                 reason="No auth method available (Phase 4 but SPIFFE disabled)",
             )
 
-        # Extract SPIFFE ID from certificate if provided
+        # STRICT: certificate is the only identity source
         extracted_spiffe_id = None
         if peer_cert_der:
             extracted_spiffe_id = extract_spiffe_id_from_cert(peer_cert_der)
-        elif spiffe_id and _is_valid_spiffe_id(spiffe_id):
-            extracted_spiffe_id = spiffe_id
 
         if not extracted_spiffe_id:
             logger.warning(
@@ -423,18 +425,6 @@ def get_allowed_callers(service_name: str) -> Set[str]:
     return DEFAULT_ALLOWED_CALLERS.get(service_name, set())
 
 
-# ---------------------------------------------------------------------------
-# Gateway Identity Forwarding Helper
-# ---------------------------------------------------------------------------
-
-def build_spiffe_forwarding_headers(caller_spiffe_id: str) -> Dict[str, str]:
-    """
-    Build headers for the Gateway to forward SPIFFE identity.
-
-    The Gateway extracts the caller's SPIFFE ID from the mTLS connection
-    and injects it into these headers for downstream services to verify.
-    """
-    return {
-        "X-SPIFFE-ID": caller_spiffe_id,
-        "X-SPIFFE-Forwarded": "true",
-    }
+# NOTE: build_spiffe_forwarding_headers() was REMOVED in strict mode.
+# Forwarding identity via X-SPIFFE-ID headers is forgeable plaintext;
+# the only trusted identity source is the mTLS peer certificate.
