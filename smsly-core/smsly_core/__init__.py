@@ -163,6 +163,13 @@ from smsly_core.ledger import (
     TraceStage,
 )
 
+# Transaction Chain client (NEW — backend payments + email lifecycle)
+from smsly_core.transaction_chain import (
+    queue_transaction_sync,
+    queue_transactions_bulk_sync,
+    queue_transaction_async,
+)
+
 __all__ = [
     # Database
     "create_async_engine",
@@ -267,5 +274,9 @@ __all__ = [
     "RequestLedger",
     "RequestLedgerSync",
     "TraceStage",
+    # Transaction Chain client
+    "queue_transaction_sync",
+    "queue_transactions_bulk_sync",
+    "queue_transaction_async",
 ]
 
