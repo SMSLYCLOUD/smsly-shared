@@ -145,15 +145,23 @@ class HttpAuditFallback:
 
 
 _bus: Optional[RedisStreamAuditBus] = None
+_kafka_bus = None
 
 
 async def get_audit_bus():
-    """Get the singleton audit bus (stream or http based on AUDIT_BUS)."""
-    global _bus
+    """Get the singleton audit bus (kafka | redis-stream | http based on AUDIT_BUS)."""
+    global _bus, _kafka_bus
     if BUS_MODE == "http":
         # http mode uses its own singleton inside audit_client
         from integration.audit_client import get_audit_client
         return get_audit_client()
+    if BUS_MODE == "kafka":
+        # Kafka/Redpanda producer — same publish() interface; started once
+        from integration.kafka_audit import KafkaAuditBus, KAFKA_BROKERS, SMSLY_AUDIT_TOPIC
+        if _kafka_bus is None:
+            _kafka_bus = KafkaAuditBus(brokers=KAFKA_BROKERS, topic=SMSLY_AUDIT_TOPIC)
+            await _kafka_bus.start()
+        return _kafka_bus
     if _bus is None:
         _bus = RedisStreamAuditBus()
         await _bus.start()

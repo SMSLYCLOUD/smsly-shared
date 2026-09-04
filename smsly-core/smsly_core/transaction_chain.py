@@ -159,6 +159,10 @@ async def queue_transaction_async(**kwargs) -> Optional[str]:
     return None
 
 
+# Alias used by SMSLY services (SMS message_service imports this name)
+queue_transaction = queue_transaction_async
+
+
 __all__ = [
     "queue_transaction_sync",
     "queue_transactions_bulk_sync",
