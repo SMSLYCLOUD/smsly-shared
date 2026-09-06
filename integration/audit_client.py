@@ -44,6 +44,7 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
+import tempfile
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -73,13 +74,25 @@ AUDIT_HTTP_PATH = os.getenv("AUDIT_HTTP_PATH", "/api/v1/audit/events")
 SERVICE_NAME = os.getenv("SERVICE_NAME", "unknown-service")
 SERVICE_SECRET = os.getenv("SERVICE_SECRET", "")
 
-# Tuning
-BATCH_SIZE = int(os.getenv("AUDIT_BATCH_SIZE", "50"))
-FLUSH_INTERVAL_S = float(os.getenv("AUDIT_FLUSH_INTERVAL", "2.0"))
-BATCH_TIMEOUT_S = float(os.getenv("AUDIT_BATCH_TIMEOUT", "5.0"))
-HTTP_TIMEOUT_S = float(os.getenv("AUDIT_HTTP_TIMEOUT", "3.0"))
-CIRCUIT_FAILURE_THRESHOLD = int(os.getenv("AUDIT_CIRCUIT_THRESHOLD", "5"))
-CIRCUIT_RECOVERY_S = float(os.getenv("AUDIT_CIRCUIT_RECOVERY", "30.0"))
+# Tuning - tolerant parsing (Grid may inject false/empty for unset numerics)
+def _env_int(key, default):
+    try:
+        return int(str(os.getenv(key, default)).strip() or default)
+    except (ValueError, TypeError):
+        return default
+
+def _env_float(key, default):
+    try:
+        return float(str(os.getenv(key, default)).strip() or default)
+    except (ValueError, TypeError):
+        return default
+
+BATCH_SIZE = _env_int("AUDIT_BATCH_SIZE", 50)
+FLUSH_INTERVAL_S = _env_float("AUDIT_FLUSH_INTERVAL", 2.0)
+BATCH_TIMEOUT_S = _env_float("AUDIT_BATCH_TIMEOUT", 5.0)
+HTTP_TIMEOUT_S = _env_float("AUDIT_HTTP_TIMEOUT", 3.0)
+CIRCUIT_FAILURE_THRESHOLD = _env_int("AUDIT_CIRCUIT_THRESHOLD", 5)
+CIRCUIT_RECOVERY_S = _env_float("AUDIT_CIRCUIT_RECOVERY", 30.0)
 
 # Fail-closed env (production default: true)
 # AUDIT_FAIL_CLOSED overrides per-service; falls back to environment-based default
@@ -91,30 +104,31 @@ else:
     FAIL_CLOSED_DEFAULT = _env in ("production", "prod", "staging")
 
 # Fallback buffer — Grid's gVisor is read-only at /var/log, so auto-fallback to /app/tmp if needed
-def _resolve_fallback_dir() -> Path:
+
+
+def _resolve_fallback_dir():
+    candidates = []
     raw = os.getenv("AUDIT_FALLBACK_DIR", "/app/tmp/audit_fallback")
-    # If env explicitly set to read-only /var/log, ignore and use /app/tmp
     if raw.startswith("/var/log"):
         raw = "/app/tmp/audit_fallback"
-    p = Path(raw)
-    try:
-        p.mkdir(parents=True, exist_ok=True)
-        # Test writability
-        test = p / ".writetest"
-        test.touch(exist_ok=True)
-        test.unlink(missing_ok=True)
-        return p
-    except Exception:
-        fallback = Path("/app/tmp/audit_fallback")
+    candidates.append(Path(raw))
+    candidates.append(Path("/app/tmp/audit_fallback"))
+    candidates.append(Path(tempfile.gettempdir()) / "smsly_audit_fallback")
+    for p in candidates:
         try:
-            fallback.mkdir(parents=True, exist_ok=True)
+            p.mkdir(parents=True, exist_ok=True)
+            test = p / ".writetest"
+            test.touch(exist_ok=True)
+            test.unlink(missing_ok=True)
+            return p
         except Exception:
-            pass
-        return fallback
+            continue
+    return candidates[-1]
+
 
 FALLBACK_DIR = _resolve_fallback_dir()
 FALLBACK_FILE = FALLBACK_DIR / "audit_fallback.jsonl"
-FALLBACK_MAX_BYTES = int(os.getenv("AUDIT_FALLBACK_MAX_MB", "50")) * 1024 * 1024
+FALLBACK_MAX_BYTES = _env_int("AUDIT_FALLBACK_MAX_MB", 50) * 1024 * 1024
 
 
 # ============================================================================
@@ -177,7 +191,10 @@ class FallbackBuffer:
     MAX_REPLAY_FILE_BYTES = FALLBACK_MAX_BYTES  # 50MB cap, drop-oldest
 
     def __init__(self):
-        FALLBACK_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            FALLBACK_DIR.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
         self._queue: deque[dict] = deque()
         self._max_queue = 10_000
         self._replaying = False
