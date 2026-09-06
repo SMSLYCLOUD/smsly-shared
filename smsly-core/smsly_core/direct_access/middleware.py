@@ -186,14 +186,21 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
         return self._memory_attempts[ip]
     
     async def _verify_gateway_identity(self, request: Request) -> bool:
-        """Verify SPIFFE mTLS identity from gateway."""
+        """Verify SPIFFE mTLS identity from gateway — peer cert only."""
         if not self._spiffe_validator:
             logger.error("direct_access_no_validator")
             return False
 
-        headers = {k: v for k, v in request.headers.items()}
+        peer_cert_der = None
+        try:
+            conn = request.scope.get("connection")
+            ssl_obj = getattr(conn, "_ssl_object", None) if conn else None
+            if ssl_obj is not None:
+                peer_cert_der = ssl_obj.getpeercert(binary_form=True)
+        except Exception:
+            peer_cert_der = None
         result = self._spiffe_validator.validate(
-            headers=headers,
+            peer_cert_der=peer_cert_der,
             method=request.method,
             path=request.url.path,
         )

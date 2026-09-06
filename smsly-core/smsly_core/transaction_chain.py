@@ -167,4 +167,5 @@ __all__ = [
     "queue_transaction_sync",
     "queue_transactions_bulk_sync",
     "queue_transaction_async",
+    "queue_transaction",
 ]

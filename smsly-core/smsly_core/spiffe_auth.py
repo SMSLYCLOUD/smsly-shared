@@ -309,8 +309,20 @@ class DualAuthValidator:
                 reason="mTLS required but no valid SPIFFE identity found",
             )
 
-        # Validate caller if enabled
-        if self.flags.caller_svid_validation and self.allowed_callers:
+        # Validate caller if enabled — fail-closed on empty allowlist
+        if self.flags.caller_svid_validation:
+            if not self.allowed_callers:
+                logger.error(
+                    "spiffe_empty_allowlist_fail_closed",
+                    service=self.service_name,
+                    spiffe_id=extracted_spiffe_id,
+                )
+                return AuthResult(
+                    authenticated=False,
+                    method="spiffe",
+                    spiffe_id=extracted_spiffe_id,
+                    reason="Empty allowed-callers — deny by default (misconfigured rules)",
+                )
             if extracted_spiffe_id not in self.allowed_callers:
                 logger.warning(
                     "spiffe_caller_rejected",
