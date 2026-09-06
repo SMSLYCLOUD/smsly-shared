@@ -132,9 +132,17 @@ class GatewayGuardMiddleware(BaseHTTPMiddleware):
                 }
             )
 
-        headers = {k: v for k, v in request.headers.items()}
+        # STRICT: peer cert only — X-SPIFFE-ID headers are forgeable and ignored
+        peer_cert_der = None
+        try:
+            conn = request.scope.get("connection")
+            ssl_obj = getattr(conn, "_ssl_object", None) if conn else None
+            if ssl_obj is not None:
+                peer_cert_der = ssl_obj.getpeercert(binary_form=True)
+        except Exception:
+            peer_cert_der = None
         result = self._spiffe_validator.validate(
-            headers=headers,
+            peer_cert_der=peer_cert_der,
             method=request.method,
             path=path,
         )
