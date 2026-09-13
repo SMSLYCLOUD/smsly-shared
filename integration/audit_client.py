@@ -1,8 +1,8 @@
 """
-Async gRPC Audit Client for Python Services.
+Async HTTP Audit Client for Python Services.
 
 Provides a resilient, batched audit client that talks directly to the
-Audit Service via tonic gRPC. Replaces the per-service HTTP clients
+Audit Service via HTTP (Gateway-routed). Replaces the per-service HTTP clients
 with a single shared implementation.
 
 Features:
@@ -40,6 +40,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -64,12 +65,29 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ============================================================================
 
-# Primary: gRPC via tonic (direct to Audit Service)
-GRPC_TARGET = os.getenv("AUDIT_GRPC_TARGET", "localhost:8005")
+# Unified audit endpoint (single source). Set AUDIT_URL in Grid.
+def _expand_port_templates(url: str, port: str) -> str:
+    url = re.sub(r"\$\{PORT(?::-[^}]*)?\}", port, url)
+    return url.replace("$PORT", port)
 
-# Fallback: HTTP via Gateway (backward compat)
-GATEWAY_URL = os.getenv("SECURITY_GATEWAY_URL", "http://localhost:8000")
-AUDIT_HTTP_PATH = os.getenv("AUDIT_HTTP_PATH", "/api/v1/audit/events")
+
+def _default_audit_url() -> str:
+    return "https://smsly-security-gateway:80/api/v1/audit/events"
+
+
+def _resolve_audit_url() -> str:
+    """Single source: AUDIT_URL. No fallback to split base+path."""
+    default_url = _default_audit_url()
+    raw = os.getenv("AUDIT_URL", default_url).strip() or default_url
+    port = os.getenv("PORT", "8000").strip() or "8000"
+    url = _expand_port_templates(raw, port)
+    if re.search(r"\$\{?PORT|PORT", url):
+        logger.warning("invalid_audit_url_template url=%s", raw)
+        return default_url
+    return url.rstrip("/")
+
+
+AUDIT_URL = _resolve_audit_url()
 
 SERVICE_NAME = os.getenv("SERVICE_NAME", "unknown-service")
 SERVICE_SECRET = os.getenv("SERVICE_SECRET", "")
@@ -340,7 +358,6 @@ class AuditClient:
             return
         self._running = True
         self._http = httpx.AsyncClient(
-            base_url=GATEWAY_URL,
             timeout=HTTP_TIMEOUT_S,
         )
         self._flush_task = asyncio.create_task(self._flush_loop())
@@ -490,7 +507,7 @@ class AuditClient:
         try:
             assert self._http is not None
             response = await self._http.post(
-                AUDIT_HTTP_PATH,
+                AUDIT_URL,
                 content=body,
                 headers=headers,
             )
@@ -558,7 +575,7 @@ class AuditClient:
                     }
                     assert self._http is not None
                     response = await self._http.post(
-                        AUDIT_HTTP_PATH, content=body, headers=headers
+                AUDIT_URL, content=body, headers=headers
                     )
                     if response.status_code < 400:
                         self._circuit.record_success()
