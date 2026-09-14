@@ -39,15 +39,14 @@ _BASE_URL = os.getenv(
 
 
 def _verify_for_url(url: str):
-    """mTLS SVID context for https mesh targets; plain-HTTP passthrough."""
-    if not url.startswith("https://"):
-        return False
+    """Route to smsly_core.mtls.verify_for_url (SVID ctx for :8443, mesh
+    ctx for :80 Traefik, passthrough for http). Never raises."""
     try:
-        from smsly_core.mtls import create_client_ssl_context
-        return create_client_ssl_context()
+        from smsly_core.mtls import verify_for_url as _router
+        return _router(url)
     except Exception as e:
         logger.warning("audit_mtls_unavailable_standard_verify error=%s", e)
-        return True
+        return url.startswith("https://")
 
 _flusher_started = False
 

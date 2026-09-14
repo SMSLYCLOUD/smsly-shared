@@ -61,10 +61,16 @@ class AdminClient:
     
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
+            try:
+                from smsly_core.mtls import verify_for_url as _vf
+                _verify = _vf(self.config.base_url)
+            except Exception:
+                _verify = True
             self._client = httpx.AsyncClient(
                 base_url=self.config.base_url,
                 timeout=self.config.timeout,
-                headers=self._get_headers()
+                headers=self._get_headers(),
+                verify=_verify,
             )
         return self._client
     

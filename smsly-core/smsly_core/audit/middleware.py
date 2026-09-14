@@ -27,6 +27,32 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
+# mTLS verify routing (SVID ctx for :8443, mesh ctx for :80, passthrough
+# for http). Guarded: this module must import even where smsly-core helpers
+# are unavailable — then httpx defaults apply.
+try:
+    from smsly_core.mtls import (
+        verify_for_url as _verify_for_url,
+        build_tag as _mtls_tag,
+        is_stale as _mtls_stale,
+        is_cert_expired_error as _mtls_expired,
+    )
+    _MTLS_HELPERS = True
+except Exception:  # pragma: no cover
+    _MTLS_HELPERS = False
+
+    def _verify_for_url(url, **kwargs):  # type: ignore
+        return True
+
+    def _mtls_tag():  # type: ignore
+        return ""
+
+    def _mtls_stale(tag):  # type: ignore
+        return False
+
+    def _mtls_expired(exc):  # type: ignore
+        return False
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -71,12 +97,33 @@ class ResilientAuditClient:
         FALLBACK_LOG_DIR.mkdir(parents=True, exist_ok=True)
     
     async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
+        if (
+            self._client is None
+            or self._client.is_closed
+            or _mtls_stale(getattr(self, "_ctx_tag", None))
+        ):
+            if self._client is not None:
+                try:
+                    await self._client.aclose()
+                except Exception:
+                    pass
             self._client = httpx.AsyncClient(
                 base_url=GATEWAY_URL,
                 timeout=5.0,
+                verify=_verify_for_url(GATEWAY_URL),
             )
+            self._ctx_tag = _mtls_tag()
         return self._client
+
+    async def _drop_client(self) -> None:
+        """Close and forget the pooled client (forces rebuild on next use)."""
+        if getattr(self, "_client", None) is not None:
+            try:
+                await self._client.aclose()
+            except Exception:
+                pass
+            self._client = None
+        self._ctx_tag = ""
     
     def _sign(self, timestamp: str, body: str) -> str:
         if not SERVICE_SECRET:
@@ -147,12 +194,31 @@ class ResilientAuditClient:
             }
             
             client = await self._get_client()
-            response = await client.post(
-                "/api/v1/audit/events",
-                content=body,
-                headers=headers,
-                timeout=3.0
-            )
+            try:
+                response = await client.post(
+                    "/api/v1/audit/events",
+                    content=body,
+                    headers=headers,
+                    timeout=3.0
+                )
+            except Exception as post_e:
+                # Reactive SVID refresh: rotation landed between the
+                # proactive check and the handshake — rebuild once, retry
+                # once, then fall through to the fallback path below.
+                if _MTLS_HELPERS and _mtls_expired(post_e):
+                    await self._drop_client()
+                    try:
+                        client = await self._get_client()
+                        response = await client.post(
+                            "/api/v1/audit/events",
+                            content=body,
+                            headers=headers,
+                            timeout=3.0
+                        )
+                    except Exception as retry_e:
+                        raise retry_e
+                else:
+                    raise
             
             if response.status_code < 400:
                 self._service_healthy = True

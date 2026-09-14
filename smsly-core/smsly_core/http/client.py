@@ -30,8 +30,8 @@ class BaseInternalClient:
     """
 
     def __init__(
-        self, 
-        base_url: str, 
+        self,
+        base_url: str,
         service_name: str,
         api_key: Optional[str] = None,
         timeout: float = 10.0,
@@ -39,45 +39,81 @@ class BaseInternalClient:
         mtls_enabled: bool = True,
     ):
         """
-        verify_ssl semantics (internal mesh):
-          - None (default): auto — https:// targets use SPIFFE mTLS when the
-            SPIRE SVID files/workload API are available, else standard CA
-            verification; http:// targets skip verification (plain mesh).
+        verify_ssl semantics (internal mesh, see smsly_core.mtls.verify_for_url):
+          - None (default): auto — :8443 targets get the SVID client context
+            (direct mTLS), other https:// targets get the mesh context
+            (system CA, no hostname check — Traefik edge termination),
+            http:// targets skip verification (plain mesh).
           - True/False: explicit override (False only for dev plain HTTP).
-        mtls_enabled=False forces standard verification for https targets.
+        mtls_enabled=False forces the mesh context for https targets
+        (no SVID client cert).
         """
         self.base_url = base_url.rstrip("/")
         self.service_name = service_name
         self.timeout = timeout
-        
-        headers = {
+
+        self._headers = {
             "User-Agent": f"SMSLY-Internal-Client/{service_name}",
             "Accept": "application/json",
         }
         if api_key:
-            headers["X-Internal-Secret"] = api_key
+            self._headers["X-Internal-Secret"] = api_key
 
         verify: Any = verify_ssl
         if verify_ssl is None:
-            if self.base_url.startswith("https://") and mtls_enabled:
-                try:
-                    from smsly_core.mtls import create_client_ssl_context
-                    verify = create_client_ssl_context()
-                except Exception as e:  # SPIRE unavailable → standard verify
-                    logger.warning(
-                        "mtls_unavailable_standard_verify service=%s error=%s",
-                        service_name, e,
-                    )
-                    verify = True
-            else:
-                verify = not self.base_url.startswith("https://")
+            try:
+                from smsly_core.mtls import verify_for_url, build_tag
+                verify = verify_for_url(self.base_url, prefer_mtls=mtls_enabled)
+                self._ctx_tag: str = build_tag()
+            except Exception as e:
+                logger.warning(
+                    "mesh_verify_unavailable_legacy service=%s error=%s",
+                    service_name, e,
+                )
+                verify = self.base_url.startswith("https://")
+                self._ctx_tag = ""
+        else:
+            self._ctx_tag = ""
 
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=timeout,
-            headers=headers,
+            headers=self._headers,
             verify=verify
         )
+
+    async def _refresh_if_stale(self, force: bool = False) -> bool:
+        """Rebuild the underlying client when the SVID rotated/expires.
+
+        Returns True if the client was rebuilt. Never raises — refresh
+        failures keep the existing client (better a stale attempt than
+        no client at all; errors still surface per-request).
+        """
+        try:
+            from smsly_core.mtls import is_stale, verify_for_url, build_tag
+        except Exception:
+            return False
+        try:
+            if not force and not is_stale(getattr(self, "_ctx_tag", None)):
+                return False
+            try:
+                await self.client.aclose()
+            except Exception:
+                pass
+            self.client = httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=self.timeout,
+                headers=self._headers,
+                verify=verify_for_url(self.base_url),
+            )
+            self._ctx_tag = build_tag()
+            logger.info("mtls_client_refreshed service=%s", self.service_name)
+            return True
+        except Exception as e:
+            logger.warning(
+                "mtls_refresh_failed service=%s error=%s", self.service_name, e,
+            )
+            return False
 
     async def aclose(self):
         """Close the underlying HTTP client."""
@@ -122,6 +158,9 @@ class BaseInternalClient:
         **kwargs
     ) -> Union[T, Dict[str, Any], None]:
         """Execute request with retries and error handling."""
+        # Proactive SVID refresh: rotation/expiry is predictable, so rebuild
+        # before the handshake fails (cheap — staleness probe is cached).
+        await self._refresh_if_stale()
         try:
             response = await self.client.request(method, path, **kwargs)
             response.raise_for_status()
@@ -135,6 +174,25 @@ class BaseInternalClient:
             return response.json()
             
         except httpx.HTTPError as e:
+            # Reactive refresh: an expiry mid-flight (rotation landed between
+            # the proactive check and the handshake) gets exactly one rebuild
+            # + retry; anything else maps to domain errors as before.
+            try:
+                from smsly_core.mtls import is_cert_expired_error
+                expired = is_cert_expired_error(e)
+            except Exception:
+                expired = False
+            if expired and await self._refresh_if_stale(force=True):
+                try:
+                    response = await self.client.request(method, path, **kwargs)
+                    response.raise_for_status()
+                    if response.status_code == 204:
+                        return None
+                    if response_model:
+                        return response_model.model_validate(response.json())
+                    return response.json()
+                except httpx.HTTPError as e2:
+                    raise self._map_exception(e2)
             raise self._map_exception(e)
         except Exception as e:
             logger.exception(f"Unexpected internal client error for {self.service_name}")

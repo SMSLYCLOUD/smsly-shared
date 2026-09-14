@@ -37,9 +37,15 @@ class InstrumentedClient:
     ):
         try:
             import httpx
+            try:
+                from smsly_core.mtls import verify_for_url as _vf
+                _verify = _vf(base_url)
+            except Exception:
+                _verify = True
             self._client = httpx.AsyncClient(
                 base_url=base_url,
                 timeout=timeout,
+                verify=_verify,
             )
         except ImportError:
             raise ImportError("httpx is required for InstrumentedClient")

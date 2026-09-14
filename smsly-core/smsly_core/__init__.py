@@ -174,11 +174,20 @@ from smsly_core.transaction_chain import (
 from smsly_core.mtls import (
     MESH_HTTP_PORT,
     MESH_MTLS_PORT,
+    REFRESH_THRESHOLD_SECONDS,
     is_spire_available,
     create_client_ssl_context,
     create_server_ssl_context,
+    create_mesh_client_context,
     create_mtls_httpx_client,
+    verify_for_url,
     direct_mtls_url,
+    build_tag,
+    is_stale,
+    get_svid_not_after,
+    svid_expiring_soon,
+    is_cert_expired_error,
+    start_svid_watcher,
 )
 
 __all__ = [
@@ -292,10 +301,19 @@ __all__ = [
     # SPIFFE mTLS helpers
     "MESH_HTTP_PORT",
     "MESH_MTLS_PORT",
+    "REFRESH_THRESHOLD_SECONDS",
     "is_spire_available",
     "create_client_ssl_context",
     "create_server_ssl_context",
+    "create_mesh_client_context",
     "create_mtls_httpx_client",
+    "verify_for_url",
     "direct_mtls_url",
+    "build_tag",
+    "is_stale",
+    "get_svid_not_after",
+    "svid_expiring_soon",
+    "is_cert_expired_error",
+    "start_svid_watcher",
 ]
 
