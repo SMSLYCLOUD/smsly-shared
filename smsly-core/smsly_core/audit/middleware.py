@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ============================================================================
 
-GATEWAY_URL = os.getenv("SECURITY_GATEWAY_URL", "http://localhost:8000")
+GATEWAY_URL = os.getenv("SECURITY_GATEWAY_URL", "https://smsly-security-gateway:80")
 SERVICE_NAME = os.getenv("SERVICE_NAME", "unknown-service")
 SERVICE_SECRET = os.getenv("SERVICE_SECRET", "")
 AUDIT_ENABLED = os.getenv("AUDIT_ENABLED", "true").lower() == "true"

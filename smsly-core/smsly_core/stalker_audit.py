@@ -34,8 +34,20 @@ _BATCH = 50
 _FLUSH_INTERVAL = 2.0
 
 _BASE_URL = os.getenv(
-    "SECURITY_GATEWAY_URL", "https://smsly-security-gateway:8080"
+    "SECURITY_GATEWAY_URL", "https://smsly-security-gateway:80"
 ).rstrip("/")
+
+
+def _verify_for_url(url: str):
+    """mTLS SVID context for https mesh targets; plain-HTTP passthrough."""
+    if not url.startswith("https://"):
+        return False
+    try:
+        from smsly_core.mtls import create_client_ssl_context
+        return create_client_ssl_context()
+    except Exception as e:
+        logger.warning("audit_mtls_unavailable_standard_verify error=%s", e)
+        return True
 
 _flusher_started = False
 
@@ -142,7 +154,8 @@ async def _flush_loop():
                         await r.rpush(_DLQ_KEY, raw)
 
                 if events:
-                    async with httpx.AsyncClient(timeout=5.0) as client:
+                    _verify = _verify_for_url(_BASE_URL)
+                    async with httpx.AsyncClient(timeout=5.0, verify=_verify) as client:
                         resp = await client.post(
                             f"{_BASE_URL}/api/v1/audit/events",
                             json={"service": events[0].get("service"), "events": events},

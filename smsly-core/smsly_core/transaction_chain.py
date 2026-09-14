@@ -19,8 +19,20 @@ logger = logging.getLogger(__name__)
 
 _CHAIN_URL = os.getenv(
     "TRANSACTION_CHAIN_URL",
-    os.getenv("SECURITY_GATEWAY_URL", "https://smsly-security-gateway:8080") + "/chain",
+    os.getenv("SECURITY_GATEWAY_URL", "https://smsly-security-gateway:80") + "/chain",
 )
+
+
+def _verify_for_url(url: str):
+    """mTLS SVID context for https mesh targets; plain-HTTP passthrough."""
+    if not url.startswith("https://"):
+        return False
+    try:
+        from smsly_core.mtls import create_client_ssl_context
+        return create_client_ssl_context()
+    except Exception as e:
+        logger.warning("chain_mtls_unavailable_standard_verify error=%s", e)
+        return True
 
 
 def _build_tx(
@@ -114,7 +126,12 @@ def queue_transaction_sync(
         external_ref=external_ref,
     )
     try:
-        resp = requests.post(f"{_CHAIN_URL}/v1/transactions", json=tx, timeout=timeout)
+        resp = requests.post(
+            f"{_CHAIN_URL}/v1/transactions",
+            json=tx,
+            timeout=timeout,
+            verify=_verify_for_url(_CHAIN_URL),
+        )
         if resp.status_code in (200, 201):
             return resp.json().get("tx_id")
         logger.warning("chain_tx_rejected status=%s body=%s", resp.status_code, resp.text[:200])
@@ -134,6 +151,7 @@ def queue_transactions_bulk_sync(transactions: list[Dict[str, Any]], timeout: fl
             f"{_CHAIN_URL}/v1/transactions/bulk",
             json={"transactions": transactions},
             timeout=timeout,
+            verify=_verify_for_url(_CHAIN_URL),
         )
         if resp.status_code in (200, 201):
             return int(resp.json().get("success", 0))
@@ -148,8 +166,9 @@ async def queue_transaction_async(**kwargs) -> Optional[str]:
 
     timeout = float(kwargs.pop("timeout", 5.0))
     tx = _build_tx(**kwargs)
+    verify = _verify_for_url(_CHAIN_URL)
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, verify=verify) as client:
             resp = await client.post(f"{_CHAIN_URL}/v1/transactions", json=tx)
             if resp.status_code in (200, 201):
                 return resp.json().get("tx_id")

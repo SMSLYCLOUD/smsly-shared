@@ -35,8 +35,17 @@ class BaseInternalClient:
         service_name: str,
         api_key: Optional[str] = None,
         timeout: float = 10.0,
-        verify_ssl: bool = False # Internal traffic usually trusts self-signed or is plain HTTP
+        verify_ssl: Optional[bool] = None,
+        mtls_enabled: bool = True,
     ):
+        """
+        verify_ssl semantics (internal mesh):
+          - None (default): auto — https:// targets use SPIFFE mTLS when the
+            SPIRE SVID files/workload API are available, else standard CA
+            verification; http:// targets skip verification (plain mesh).
+          - True/False: explicit override (False only for dev plain HTTP).
+        mtls_enabled=False forces standard verification for https targets.
+        """
         self.base_url = base_url.rstrip("/")
         self.service_name = service_name
         self.timeout = timeout
@@ -48,11 +57,26 @@ class BaseInternalClient:
         if api_key:
             headers["X-Internal-Secret"] = api_key
 
+        verify: Any = verify_ssl
+        if verify_ssl is None:
+            if self.base_url.startswith("https://") and mtls_enabled:
+                try:
+                    from smsly_core.mtls import create_client_ssl_context
+                    verify = create_client_ssl_context()
+                except Exception as e:  # SPIRE unavailable → standard verify
+                    logger.warning(
+                        "mtls_unavailable_standard_verify service=%s error=%s",
+                        service_name, e,
+                    )
+                    verify = True
+            else:
+                verify = not self.base_url.startswith("https://")
+
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=timeout,
             headers=headers,
-            verify=verify_ssl
+            verify=verify
         )
 
     async def aclose(self):

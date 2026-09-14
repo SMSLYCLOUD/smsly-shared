@@ -170,6 +170,17 @@ from smsly_core.transaction_chain import (
     queue_transaction_async,
 )
 
+# SPIFFE mTLS helpers (dual-port: :8080 Traefik HTTP, :8443 direct mTLS)
+from smsly_core.mtls import (
+    MESH_HTTP_PORT,
+    MESH_MTLS_PORT,
+    is_spire_available,
+    create_client_ssl_context,
+    create_server_ssl_context,
+    create_mtls_httpx_client,
+    direct_mtls_url,
+)
+
 __all__ = [
     # Database
     "create_async_engine",
@@ -278,5 +289,13 @@ __all__ = [
     "queue_transaction_sync",
     "queue_transactions_bulk_sync",
     "queue_transaction_async",
+    # SPIFFE mTLS helpers
+    "MESH_HTTP_PORT",
+    "MESH_MTLS_PORT",
+    "is_spire_available",
+    "create_client_ssl_context",
+    "create_server_ssl_context",
+    "create_mtls_httpx_client",
+    "direct_mtls_url",
 ]
 

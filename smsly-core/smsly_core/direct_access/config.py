@@ -12,7 +12,7 @@ GATEWAY_IPS: Set[str] = set(
     os.getenv("GATEWAY_IPS", "").split(",")
 ) if os.getenv("GATEWAY_IPS") else set()
 
-GATEWAY_URL = os.getenv("SECURITY_GATEWAY_URL", "https://gateway.smsly.io")
+GATEWAY_URL = os.getenv("SECURITY_GATEWAY_URL", "https://smsly-security-gateway:80")
 SERVICE_NAME = os.getenv("SERVICE_NAME", "smsly-microservice")
 MAX_WARNINGS = int(os.getenv("DIRECT_ACCESS_MAX_WARNINGS", "2"))
 BLACKLIST_DURATION_HOURS = int(os.getenv("BLACKLIST_DURATION_HOURS", "24"))
