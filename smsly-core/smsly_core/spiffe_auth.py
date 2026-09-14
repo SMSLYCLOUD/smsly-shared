@@ -19,7 +19,7 @@ Usage:
     # In middleware:
     validator = DualAuthValidator(
         service_name="smsly-rate-limit",
-        allowed_callers={"spiffe://trulay.co/service/gateway"},
+        allowed_callers={"spiffe://ecosystem.local/service/gateway"},
     )
     result = validator.validate(
         peer_cert_der=peer_certificate_bytes,
@@ -48,7 +48,7 @@ except ImportError:
 # Constants
 # ---------------------------------------------------------------------------
 
-SPIFFE_TRUST_DOMAIN = os.getenv("SPIFFE_TRUST_DOMAIN", "trulay.co")
+SPIFFE_TRUST_DOMAIN = os.getenv("SPIFFE_TRUST_DOMAIN", "ecosystem.local")
 SPIFFE_ID_PREFIX = f"spiffe://{SPIFFE_TRUST_DOMAIN}/service/"
 
 # SPIFFE OID: 1.3.6.1.4.1.57264.1.1
@@ -403,7 +403,7 @@ def _load_communication_rules() -> Dict[str, Set[str]]:
             data = _json.load(f)
         
         # Resolve {trust_domain} placeholder
-        trust_domain = _os.environ.get("SPIFFE_TRUST_DOMAIN", "trulay.co")
+        trust_domain = _os.environ.get("SPIFFE_TRUST_DOMAIN", "ecosystem.local")
         
         rules = data.get("rules", {})
         result: Dict[str, Set[str]] = {}
