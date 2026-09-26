@@ -55,6 +55,37 @@ SPIFFE_ID_PREFIX = f"spiffe://{SPIFFE_TRUST_DOMAIN}/service/"
 SPIFFE_OID_DOTTED = "1.3.6.1.4.1.57264.1.1"
 
 
+def extract_peer_cert_der(request_or_scope) -> Optional[bytes]:
+    """DER peer cert from an ASGI request/scope, or None.
+
+    Primary source is the MtlsHTTPProtocol extension
+    (scope["extensions"]["tls"]["client_cert_der"]) — stock uvicorn never
+    exposes peer certs to ASGI, which blinded every scope["connection"]
+    reader (2026-09-26: all :8443 callers unauthenticated). Legacy
+    scope["connection"]._ssl_object kept as fallback for other servers.
+    Only present on mTLS listeners; plaintext never has one.
+    """
+    try:
+        scope = getattr(request_or_scope, "scope", request_or_scope) or {}
+        ext = (scope.get("extensions") or {}).get("tls") or {}
+        der = ext.get("client_cert_der")
+        if der:
+            return der if isinstance(der, bytes) else bytes(der)
+    except Exception:
+        pass
+    try:
+        scope = getattr(request_or_scope, "scope", request_or_scope) or {}
+        connection = scope.get("connection")
+        if connection is None:
+            return None
+        ssl_obj = getattr(connection, "_ssl_object", None)
+        if ssl_obj is None:
+            return None
+        return ssl_obj.getpeercert(binary_form=True) or None
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Migration Phase Enum (backward compat for .value callers)
 # ---------------------------------------------------------------------------

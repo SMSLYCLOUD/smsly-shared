@@ -204,3 +204,14 @@ def test_no_peer_cert_still_enforced():
     # requires GATEWAY_IPS or a gateway signature.)
     assert _run_dispatch(None, client_ip="203.0.113.9") == 403
     assert _run_dispatch("NO_SSL", client_ip="203.0.113.9") == 403
+
+
+def test_extract_peer_cert_der_prefers_extensions():
+    from smsly_core.spiffe_auth import extract_peer_cert_der
+
+    class FakeReq:
+        scope = {"extensions": {"tls": {"client_cert_der": b"DER-BYTES"}}}
+
+    assert extract_peer_cert_der(FakeReq()) == b"DER-BYTES"
+    assert extract_peer_cert_der({}) is None
+    assert extract_peer_cert_der({"extensions": {}}) is None

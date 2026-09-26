@@ -83,15 +83,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # STRICT MODE: identity comes ONLY from the mTLS peer certificate.
         # X-SPIFFE-ID headers are attacker-forgeable plaintext and are ignored.
-        peer_cert_der = None
-        connection = request.scope.get("connection")
-        if connection:
-            ssl_obj = getattr(connection, "_ssl_object", None)
-            if ssl_obj:
-                try:
-                    peer_cert_der = ssl_obj.getpeercert(binary_form=True)
-                except Exception:
-                    pass
+        # Peer cert via shared helper (MtlsHTTPProtocol scope extensions first).
+        from smsly_core.spiffe_auth import extract_peer_cert_der
+        peer_cert_der = extract_peer_cert_der(request)
 
         result = self._spiffe_validator.validate(
             peer_cert_der=peer_cert_der,
