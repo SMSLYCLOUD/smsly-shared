@@ -48,9 +48,19 @@ def is_internal_ip(ip: str) -> bool:
 def _has_tls_peer_cert(request: Request) -> bool:
     """True when the connection presented a TLS client certificate.
 
+    Primary source is the uvicorn MtlsHTTPProtocol extension
+    (scope["extensions"]["tls"]["client_cert_der"]) — stock uvicorn never
+    exposes peer certs to ASGI, so the legacy scope["connection"] path is
+    kept only as a fallback for other servers.
     Only possible on mTLS listeners (server requires client certs).
     Plaintext and edge-terminated connections never have one.
     """
+    try:
+        ext = (request.scope.get("extensions") or {}).get("tls") or {}
+        if ext.get("client_cert_der"):
+            return True
+    except Exception:
+        pass
     try:
         connection = request.scope.get("connection")
         if connection is None:

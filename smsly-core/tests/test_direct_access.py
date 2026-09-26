@@ -156,6 +156,8 @@ def _run_dispatch(peer_cert, path="/v1/audit/events/bulk", client_ip="172.30.5.2
         "headers": [(b"content-type", b"application/json")],
         "client": (client_ip, 33164),
         "connection": _FakeConnection(peer_cert),
+        "extensions": {"tls": {"client_cert_der": peer_cert}}
+        if peer_cert not in (None, "NO_SSL") else {},
     }
 
     async def receive():
