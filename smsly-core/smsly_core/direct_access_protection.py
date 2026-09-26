@@ -45,6 +45,24 @@ def is_internal_ip(ip: str) -> bool:
     return any(ip.startswith(prefix) for prefix in INTERNAL_PREFIXES)
 
 
+def _has_tls_peer_cert(request: Request) -> bool:
+    """True when the connection presented a TLS client certificate.
+
+    Only possible on mTLS listeners (server requires client certs).
+    Plaintext and edge-terminated connections never have one.
+    """
+    try:
+        connection = request.scope.get("connection")
+        if connection is None:
+            return False
+        ssl_obj = getattr(connection, "_ssl_object", None)
+        if ssl_obj is None:
+            return False
+        return bool(ssl_obj.getpeercert(binary_form=True))
+    except Exception:
+        return False
+
+
 def is_gateway_ip(ip: str) -> bool:
     """Check if request comes from the Security Gateway."""
     if not ip:
@@ -280,11 +298,20 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         """Process request and enforce direct access protection."""
         path = request.url.path
-        
+
         # Allow health checks and metrics (needed for orchestrators)
         if path in self.excluded_paths:
             return await call_next(request)
-        
+
+        # mTLS listeners (:8443 ingest) authenticate callers via SPIFFE
+        # client certs — that IS access control, not a bypass of it.
+        # Without this, SVID-authenticated service callers are flagged as
+        # "direct access" and blacklisted (2026-09-26: audit blacklisted
+        # every service trying mTLS delivery). Authorization still happens
+        # downstream (SPIFFE allowlist + permission checks).
+        if _has_tls_peer_cert(request):
+            return await call_next(request)
+
         client_ip = self._get_client_ip(request)
         
         # Allow requests from Security Gateway
