@@ -357,8 +357,14 @@ class AuditClient:
         if self._running:
             return
         self._running = True
+        try:
+            from smsly_core.mtls import verify_for_url as _vf
+            _verify = _vf(AUDIT_URL)
+        except Exception:
+            _verify = True
         self._http = httpx.AsyncClient(
             timeout=HTTP_TIMEOUT_S,
+            verify=_verify,
         )
         self._flush_task = asyncio.create_task(self._flush_loop())
         logger.info("audit_client_started service=%s", self._service_name)

@@ -42,9 +42,18 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ============================================================================
 
+# mTLS verify routing (SVID ctx for :8443, mesh ctx for :80 Traefik,
+# passthrough for http). Standalone-safe: httpx defaults apply when
+# smsly-core is unavailable.
+try:
+    from smsly_core.mtls import verify_for_url as _verify_for_url
+except Exception:  # pragma: no cover
+    def _verify_for_url(url, **kwargs):  # type: ignore
+        return True
+
 class AuditConfig:
     """Audit client configuration from environment."""
-    GATEWAY_URL = os.getenv("SECURITY_GATEWAY_URL", "http://localhost:8000")
+    GATEWAY_URL = os.getenv("SECURITY_GATEWAY_URL", "https://smsly-security-gateway:80")
     SERVICE_NAME = os.getenv("SERVICE_NAME", "unknown-service")
     SERVICE_SECRET = os.getenv("SERVICE_SECRET", "")
     BATCH_SIZE = int(os.getenv("AUDIT_BATCH_SIZE", "10"))
@@ -124,6 +133,7 @@ class AuditClient:
             self._client = httpx.AsyncClient(
                 base_url=self.config.GATEWAY_URL,
                 timeout=self.config.TIMEOUT,
+                verify=_verify_for_url(self.config.GATEWAY_URL),
             )
         return self._client
     
