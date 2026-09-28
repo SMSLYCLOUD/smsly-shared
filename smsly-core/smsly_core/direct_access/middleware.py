@@ -22,6 +22,7 @@ from .config import (
     DEFAULT_EXCLUDED_PATHS,
 )
 from .ip_utils import is_gateway_ip
+import ipaddress as _ipaddress
 
 try:
     from smsly_core.spiffe_auth import (
@@ -232,9 +233,63 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
         # Verify SPIFFE mTLS identity
         if await self._verify_gateway_identity(request):
             return await call_next(request)
-        
+
+        # Mesh attestation: the gateway authenticated the caller and
+        # attested it over the private mesh (see _verify_attested_mesh).
+        # Opt-in via TRUST_ATTESTED_MESH + CIDR pin; fail closed otherwise.
+        if self._verify_attested_mesh(request, client_ip):
+            return await call_next(request)
+
         # DIRECT ACCESS DETECTED
         return await self._handle_direct_access(request, client_ip, path)
+
+    def _verify_attested_mesh(self, request: Request, client_ip: str) -> bool:
+        """Accept gateway-attested mesh traffic (explicit opt-in only)."""
+        if os.getenv("TRUST_ATTESTED_MESH", "false").strip().lower() not in (
+            "1", "true", "yes",
+        ):
+            return False
+        raw = request.headers.get("x-smsly-validated", "") or ""
+        if not any(p.strip().lower() == "true" for p in raw.split(",")):
+            return False
+        # Pin: exact IPs (GATEWAY_IPS) and/or CIDRs (GATEWAY_ALLOWED_IPS).
+        # At least one pin must exist AND match — no pin, no trust.
+        exact = {
+            p.strip() for p in os.getenv("GATEWAY_IPS", "").split(",") if p.strip()
+        }
+        pinned = False
+        if client_ip and client_ip in exact:
+            pinned = True
+        else:
+            cidrs = [
+                p.strip() for p in os.getenv("GATEWAY_ALLOWED_IPS", "").split(",")
+                if p.strip()
+            ]
+            try:
+                addr = _ipaddress.ip_address(client_ip)
+            except ValueError:
+                return False
+            for cidr in cidrs:
+                try:
+                    if addr in _ipaddress.ip_network(cidr, strict=False):
+                        pinned = True
+                        break
+                except ValueError:
+                    continue
+        if not pinned:
+            logger.debug(
+                "attested_mesh_unpinned",
+                ip=client_ip,
+                service=self.service_name,
+            )
+            return False
+        logger.debug(
+            "attested_mesh_passed",
+            ip=client_ip,
+            service=self.service_name,
+            path=request.url.path,
+        )
+        return True
     
     async def _handle_direct_access(self, request: Request, client_ip: str, path: str):
         """Handle a direct access attempt."""
@@ -271,7 +326,7 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
                 "error": "access_denied",
                 "message": "Your IP has been blocked due to repeated unauthorized access.",
                 "code": "IP_BLACKLISTED",
-                "support": "Contact support@smsly.io if this is an error."
+                "support": "Contact support@trulay.co if this is an error."
             }
         )
     
