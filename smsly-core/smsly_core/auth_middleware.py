@@ -99,6 +99,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.state.spiffe_id = result.spiffe_id
             return await call_next(request)
 
+        # Mesh attestation fallback (explicit opt-in ONLY): the gateway
+        # authenticated the caller and attested it over the private mesh.
+        # Plaintext mesh hops carry no peer cert, so strict mTLS alone
+        # seals every legitimate mesh caller. Requires
+        # TRUST_ATTESTED_MESH=true plus a CIDR pin (GATEWAY_IPS and/or
+        # GATEWAY_ALLOWED_IPS); fail closed otherwise. Forged headers
+        # can't reach here — the gateway scrubs inbound x-smsly-validated
+        # at its edge.
+        if self._verify_attested_mesh(request):
+            request.state.authenticated = True
+            request.state.auth_source = "attested-mesh"
+            request.state.spiffe_id = request.headers.get("x-smsly-key-id", "")
+            return await call_next(request)
+
         # Authentication failed
         logger.warning(
             "auth_failed",
@@ -112,6 +126,41 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 "detail": result.reason or "Valid SPIFFE mTLS identity required",
             }
         )
+
+    def _verify_attested_mesh(self, request: Request) -> bool:
+        """Accept gateway-attested mesh traffic (explicit opt-in only)."""
+        import os as _os
+        import ipaddress as _ip
+        if _os.getenv("TRUST_ATTESTED_MESH", "false").strip().lower() not in (
+            "1", "true", "yes",
+        ):
+            return False
+        raw = request.headers.get("x-smsly-validated", "") or ""
+        if not any(p.strip().lower() == "true" for p in raw.split(",")):
+            return False
+        client = request.client
+        peer = client.host if client else ""
+        exact = {
+            p.strip() for p in _os.getenv("GATEWAY_IPS", "").split(",") if p.strip()
+        }
+        if peer and peer in exact:
+            return True
+        try:
+            addr = _ip.ip_address(peer)
+        except ValueError:
+            return False
+        for cidr in (
+            p.strip() for p in _os.getenv("GATEWAY_ALLOWED_IPS", "").split(",")
+            if p.strip()
+        ):
+            try:
+                if addr in _ip.ip_network(cidr, strict=False):
+                    logger.debug("auth_attested_mesh_passed", ip=peer)
+                    return True
+            except ValueError:
+                continue
+        logger.debug("auth_attested_mesh_unpinned", ip=peer)
+        return False
 
 
 __all__ = ["AuthMiddleware"]
