@@ -292,6 +292,43 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
         # If verification fails, we log and return False.
         return False
 
+    def _verify_attested_mesh(self, request: Request, client_ip: str) -> bool:
+        """Accept gateway-attested mesh traffic (explicit opt-in only)."""
+        if os.getenv("TRUST_ATTESTED_MESH", "false").strip().lower() not in (
+            "1", "true", "yes",
+        ):
+            return False
+        raw = request.headers.get("x-smsly-validated", "") or ""
+        if not any(p.strip().lower() == "true" for p in raw.split(",")):
+            return False
+        import ipaddress as _ip
+        exact = {
+            p.strip() for p in os.getenv("GATEWAY_IPS", "").split(",") if p.strip()
+        }
+        if client_ip and client_ip in exact:
+            pinned = True
+        else:
+            pinned = False
+            try:
+                addr = _ip.ip_address(client_ip)
+            except ValueError:
+                return False
+            for cidr in (
+                p.strip() for p in os.getenv("GATEWAY_ALLOWED_IPS", "").split(",")
+                if p.strip()
+            ):
+                try:
+                    if addr in _ip.ip_network(cidr, strict=False):
+                        pinned = True
+                        break
+                except ValueError:
+                    continue
+        if not pinned:
+            logger.debug("attested_mesh_unpinned", ip=client_ip)
+            return False
+        logger.debug("attested_mesh_passed", ip=client_ip, path=request.url.path)
+        return True
+
     async def dispatch(self, request: Request, call_next):
         """Process request and enforce direct access protection."""
         path = request.url.path
@@ -326,6 +363,17 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
                     path=path
                 )
                 # Fall through to enforcement (block)
+
+        # Mesh attestation: the gateway authenticated the caller (SDK HMAC)
+        # and attested it over the private mesh. Opt-in via
+        # TRUST_ATTESTED_MESH + CIDR pin (GATEWAY_IPS and/or
+        # GATEWAY_ALLOWED_IPS); fail closed otherwise. The gateway scrubs
+        # inbound forgeries at its edge, and mesh peers dial plaintext HTTP
+        # where no peer cert exists — without this, legitimate mesh hops
+        # are warned then blacklisted (2026-09-28: platform blacklisted
+        # itself calling rate-limit/policy through the mesh).
+        if self._verify_attested_mesh(request, client_ip):
+            return await call_next(request)
         
         # =========================================================================
         # DIRECT ACCESS DETECTED - Enforce protection
@@ -345,10 +393,10 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
                     "error": "access_denied",
                     "message": "Your IP has been blocked due to repeated unauthorized access attempts.",
                     "code": "IP_BLACKLISTED",
-                    "support": "Contact support@smsly.io if you believe this is an error."
+                    "support": "Contact support@trulay.co if you believe this is an error."
                 }
             )
-        
+
         # Increment attempt counter
         attempt_count = self._increment_attempts(client_ip)
         
@@ -382,10 +430,10 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
                         "gateway_url": self.gateway_url,
                         "documentation": f"{self.gateway_url}/docs",
                     },
-                    "support": "Contact support@smsly.io if you believe this is an error."
+                    "support": "Contact support@trulay.co if you believe this is an error."
                 }
             )
-        
+
         # 1st or 2nd attempt - WARNING
         warnings_remaining = self.max_warnings - attempt_count + 1
         
