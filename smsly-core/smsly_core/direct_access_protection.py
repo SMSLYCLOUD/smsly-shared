@@ -10,9 +10,15 @@ Behavior:
 - 3rd attempt: Block and blacklist the IP
 - Subsequent attempts: Immediate block
 
+Operator whitelist (DIRECT_ACCESS_WHITELIST_IPS / _CIDRS, loopback by
+default): whitelisted IPs bypass warn/blacklist accounting entirely —
+they can never be blacklisted, and pre-existing blacklist entries are
+ignored for them (no Redis surgery to un-ban infra IPs).
+
 Uses Redis for distributed tracking across all microservices.
 """
 
+import ipaddress
 import os
 from typing import Set
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -40,9 +46,65 @@ INTERNAL_PREFIXES = ("10.", "172.16.", "172.17.", "172.18.", "172.19.",
                      "172.30.", "172.31.", "192.168.", "127.")
 
 
+# Operator IP whitelist: exact IPs + CIDRs that bypass warn/blacklist
+# accounting entirely (LB / health-prober / mesh ranges that must never
+# be banned for unattested probe traffic). Fail-closed defaults: trusts
+# nothing but loopback; every other entry is explicit env.
+#   DIRECT_ACCESS_WHITELIST_IPS="203.0.113.10,203.0.113.11"
+#   DIRECT_ACCESS_WHITELIST_CIDRS="172.30.0.0/16,10.0.0.0/8"
+#   DIRECT_ACCESS_WHITELIST_LOOPBACK="true"  (127.0.0.1/::1; set false to enforce)
+WHITELIST_IPS = {
+    part.strip()
+    for part in os.getenv("DIRECT_ACCESS_WHITELIST_IPS", "").split(",")
+    if part.strip()
+}
+WHITELIST_LOOPBACK = os.getenv("DIRECT_ACCESS_WHITELIST_LOOPBACK", "true").lower() in (
+    "1", "true", "yes",
+)
+
+
+def _parse_whitelist_cidrs() -> list:
+    nets = []
+    for part in os.getenv("DIRECT_ACCESS_WHITELIST_CIDRS", "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            logger.warning("direct_access_whitelist_bad_cidr", cidr=part)
+    return nets
+
+
+WHITELIST_NETS = _parse_whitelist_cidrs()
+
+
 def is_internal_ip(ip: str) -> bool:
     """Check if IP is internal/local."""
     return any(ip.startswith(prefix) for prefix in INTERNAL_PREFIXES)
+
+
+def is_whitelisted_ip(ip: str) -> bool:
+    """True when an IP bypasses warn/blacklist accounting entirely.
+
+    Exact-match first (also covers non-IP client identifiers such as
+    Starlette's "testclient"), then loopback, then CIDR containment.
+    Invalid CIDRs are skipped at parse time with a warning — never fatal.
+    """
+    if not ip:
+        return False
+    if ip in WHITELIST_IPS:
+        return True
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if WHITELIST_LOOPBACK and addr.is_loopback:
+        return True
+    try:
+        return any(addr in net for net in WHITELIST_NETS)
+    except Exception:
+        return False
 
 
 def _has_tls_peer_cert(request: Request) -> bool:
@@ -347,7 +409,15 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         client_ip = self._get_client_ip(request)
-        
+
+        # Operator whitelist (LB/health-prober IPs, mesh CIDRs, loopback):
+        # bypasses warn/blacklist accounting entirely — whitelisted IPs
+        # can never be blacklisted, and pre-existing blacklist entries
+        # are ignored for them (no Redis surgery to un-ban infra IPs).
+        # Checked before the blacklist so whitelisting un-bans live.
+        if is_whitelisted_ip(client_ip):
+            return await call_next(request)
+
         # Allow requests from Security Gateway
         if is_gateway_ip(client_ip):
             return await call_next(request)

@@ -215,3 +215,118 @@ def test_extract_peer_cert_der_prefers_extensions():
     assert extract_peer_cert_der(FakeReq()) == b"DER-BYTES"
     assert extract_peer_cert_der({}) is None
     assert extract_peer_cert_der({"extensions": {}}) is None
+
+
+# ---------------------------------------------------------------- whitelist
+
+def _with_whitelist(monkeypatch, ips=None, cidrs=None, loopback=None):
+    import ipaddress
+    import smsly_core.direct_access_protection as dap
+    if ips is not None:
+        monkeypatch.setattr(dap, "WHITELIST_IPS", set(ips))
+    if cidrs is not None:
+        monkeypatch.setattr(dap, "WHITELIST_NETS",
+                            [ipaddress.ip_network(c) for c in cidrs])
+    if loopback is not None:
+        monkeypatch.setattr(dap, "WHITELIST_LOOPBACK", loopback)
+
+
+def test_whitelist_exact_ip(monkeypatch):
+    import smsly_core.direct_access_protection as dap
+    _with_whitelist(monkeypatch, ips={"203.0.113.10"})
+    assert dap.is_whitelisted_ip("203.0.113.10")
+    assert not dap.is_whitelisted_ip("203.0.113.11")
+
+
+def test_whitelist_cidr_containment(monkeypatch):
+    import smsly_core.direct_access_protection as dap
+    _with_whitelist(monkeypatch, ips=set(), cidrs=["172.30.0.0/16"])
+    assert dap.is_whitelisted_ip("172.30.5.2")
+    assert dap.is_whitelisted_ip("172.30.255.255")
+    assert not dap.is_whitelisted_ip("172.31.5.2")
+    assert not dap.is_whitelisted_ip("203.0.113.9")
+
+
+def test_whitelist_loopback_default_on(monkeypatch):
+    import smsly_core.direct_access_protection as dap
+    _with_whitelist(monkeypatch, ips=set(), cidrs=[], loopback=True)
+    assert dap.is_whitelisted_ip("127.0.0.1")
+    assert dap.is_whitelisted_ip("::1")
+    _with_whitelist(monkeypatch, loopback=False)
+    assert not dap.is_whitelisted_ip("127.0.0.1")
+
+
+def test_whitelist_non_ip_identifier(monkeypatch):
+    import smsly_core.direct_access_protection as dap
+    _with_whitelist(monkeypatch, ips={"testclient"})
+    assert dap.is_whitelisted_ip("testclient")
+    assert not dap.is_whitelisted_ip("otherclient")
+
+
+def test_whitelisted_ip_bypasses_enforcement(monkeypatch):
+    # 2026-10-12: identity banned 172.30.5.2 + 127.0.0.1 over unattested
+    # probe traffic. A whitelisted mesh IP passes even with zero gateway
+    # attestation and max_warnings=0 (immediate-block posture).
+    import smsly_core.direct_access_protection as dap
+    _with_whitelist(monkeypatch, cidrs=["172.30.0.0/16"])
+    scope = {
+        "type": "http", "http_version": "1.1", "method": "GET",
+        "scheme": "http", "path": "/favicon.ico",
+        "headers": [], "client": ("172.30.5.2", 40000),
+        "connection": _FakeConnection("NO_SSL"), "extensions": {},
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def downstream(request):
+        return JSONResponse({"status": "ok"})
+
+    mw = DirectAccessProtectionMiddleware.__new__(DirectAccessProtectionMiddleware)
+    mw.service_name = "test-service"
+    mw.gateway_url = "https://gateway.local"
+    mw.max_warnings = 0
+    mw.blacklist_hours = 24
+    mw.excluded_paths = {"/health", "/ready", "/live", "/metrics"}
+    mw._redis = None
+    mw._memory_attempts = {}
+    mw._memory_blacklist = set()
+
+    import asyncio as _asyncio
+    result = _asyncio.run(mw.dispatch(Request(scope, receive), downstream))
+    assert getattr(result, "status_code", None) == 200
+    # No warn budget burned, no blacklist entry written.
+    assert mw._memory_attempts == {}
+    assert mw._memory_blacklist == set()
+
+
+def test_whitelist_ignores_existing_blacklist(monkeypatch):
+    # Whitelisting un-bans live: a pre-blacklisted IP passes once listed.
+    import smsly_core.direct_access_protection as dap
+    _with_whitelist(monkeypatch, ips={"203.0.113.77"})
+    scope = {
+        "type": "http", "http_version": "1.1", "method": "GET",
+        "scheme": "http", "path": "/v1/messages",
+        "headers": [], "client": ("203.0.113.77", 40001),
+        "connection": _FakeConnection("NO_SSL"), "extensions": {},
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def downstream(request):
+        return JSONResponse({"status": "ok"})
+
+    mw = DirectAccessProtectionMiddleware.__new__(DirectAccessProtectionMiddleware)
+    mw.service_name = "test-service"
+    mw.gateway_url = "https://gateway.local"
+    mw.max_warnings = 2
+    mw.blacklist_hours = 24
+    mw.excluded_paths = {"/health"}
+    mw._redis = None
+    mw._memory_attempts = {}
+    mw._memory_blacklist = {"203.0.113.77"}
+
+    import asyncio as _asyncio
+    result = _asyncio.run(mw.dispatch(Request(scope, receive), downstream))
+    assert getattr(result, "status_code", None) == 200
