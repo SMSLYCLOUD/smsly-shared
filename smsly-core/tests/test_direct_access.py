@@ -219,11 +219,9 @@ def test_extract_peer_cert_der_prefers_extensions():
 
 # ---------------------------------------------------------------- whitelist
 
-def _with_whitelist(monkeypatch, ips=None, cidrs=None, loopback=None):
+def _with_whitelist(monkeypatch, cidrs=None, loopback=None):
     import ipaddress
     import smsly_core.direct_access_protection as dap
-    if ips is not None:
-        monkeypatch.setattr(dap, "WHITELIST_IPS", set(ips))
     if cidrs is not None:
         monkeypatch.setattr(dap, "WHITELIST_NETS",
                             [ipaddress.ip_network(c) for c in cidrs])
@@ -231,16 +229,17 @@ def _with_whitelist(monkeypatch, ips=None, cidrs=None, loopback=None):
         monkeypatch.setattr(dap, "WHITELIST_LOOPBACK", loopback)
 
 
-def test_whitelist_exact_ip(monkeypatch):
+def test_whitelist_host_route(monkeypatch):
+    # Ranges only: a single IP is a /32 host route.
     import smsly_core.direct_access_protection as dap
-    _with_whitelist(monkeypatch, ips={"203.0.113.10"})
+    _with_whitelist(monkeypatch, cidrs=["203.0.113.10/32"])
     assert dap.is_whitelisted_ip("203.0.113.10")
     assert not dap.is_whitelisted_ip("203.0.113.11")
 
 
 def test_whitelist_cidr_containment(monkeypatch):
     import smsly_core.direct_access_protection as dap
-    _with_whitelist(monkeypatch, ips=set(), cidrs=["172.30.0.0/16"])
+    _with_whitelist(monkeypatch, cidrs=["172.30.0.0/16"])
     assert dap.is_whitelisted_ip("172.30.5.2")
     assert dap.is_whitelisted_ip("172.30.255.255")
     assert not dap.is_whitelisted_ip("172.31.5.2")
@@ -249,18 +248,35 @@ def test_whitelist_cidr_containment(monkeypatch):
 
 def test_whitelist_loopback_default_on(monkeypatch):
     import smsly_core.direct_access_protection as dap
-    _with_whitelist(monkeypatch, ips=set(), cidrs=[], loopback=True)
+    _with_whitelist(monkeypatch, cidrs=[], loopback=True)
     assert dap.is_whitelisted_ip("127.0.0.1")
     assert dap.is_whitelisted_ip("::1")
     _with_whitelist(monkeypatch, loopback=False)
     assert not dap.is_whitelisted_ip("127.0.0.1")
 
 
-def test_whitelist_non_ip_identifier(monkeypatch):
+def test_whitelist_non_ip_identifier_never_matches(monkeypatch):
+    # Ranges only: non-IP client identifiers (e.g. Starlette's
+    # "testclient") can no longer bypass accounting.
     import smsly_core.direct_access_protection as dap
-    _with_whitelist(monkeypatch, ips={"testclient"})
-    assert dap.is_whitelisted_ip("testclient")
+    _with_whitelist(monkeypatch, cidrs=["172.30.0.0/16"])
+    assert not dap.is_whitelisted_ip("testclient")
     assert not dap.is_whitelisted_ip("otherclient")
+
+
+def test_whitelist_bare_ip_parsed_as_host_route(monkeypatch):
+    # Bare IPs in the CIDR var normalize to /32 (IPv6 /128).
+    import os
+    import smsly_core.direct_access_protection as dap
+    monkeypatch.setenv("DIRECT_ACCESS_WHITELIST_CIDRS", "203.0.113.10,2001:db8::1")
+    monkeypatch.setenv("DIRECT_ACCESS_WHITELIST_IPS", "")
+    nets = dap._parse_whitelist_cidrs()
+    assert len(nets) == 2
+    monkeypatch.setattr(dap, "WHITELIST_NETS", nets)
+    assert dap.is_whitelisted_ip("203.0.113.10")
+    assert not dap.is_whitelisted_ip("203.0.113.11")
+    assert dap.is_whitelisted_ip("2001:db8::1")
+    assert not dap.is_whitelisted_ip("2001:db8::2")
 
 
 def test_whitelisted_ip_bypasses_enforcement(monkeypatch):
@@ -303,7 +319,7 @@ def test_whitelisted_ip_bypasses_enforcement(monkeypatch):
 def test_whitelist_ignores_existing_blacklist(monkeypatch):
     # Whitelisting un-bans live: a pre-blacklisted IP passes once listed.
     import smsly_core.direct_access_protection as dap
-    _with_whitelist(monkeypatch, ips={"203.0.113.77"})
+    _with_whitelist(monkeypatch, cidrs=["203.0.113.77/32"])
     scope = {
         "type": "http", "http_version": "1.1", "method": "GET",
         "scheme": "http", "path": "/v1/messages",

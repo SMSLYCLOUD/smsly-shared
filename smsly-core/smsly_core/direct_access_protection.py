@@ -10,10 +10,11 @@ Behavior:
 - 3rd attempt: Block and blacklist the IP
 - Subsequent attempts: Immediate block
 
-Operator whitelist (DIRECT_ACCESS_WHITELIST_IPS / _CIDRS, loopback by
-default): whitelisted IPs bypass warn/blacklist accounting entirely —
+Operator whitelist (DIRECT_ACCESS_WHITELIST_CIDRS, loopback by
+default): whitelisted ranges bypass warn/blacklist accounting entirely —
 they can never be blacklisted, and pre-existing blacklist entries are
-ignored for them (no Redis surgery to un-ban infra IPs).
+ignored for them (no Redis surgery to un-ban infra IPs). Ranges only:
+a single IP is a /32 (IPv6 /128).
 
 Uses Redis for distributed tracking across all microservices.
 """
@@ -46,18 +47,13 @@ INTERNAL_PREFIXES = ("10.", "172.16.", "172.17.", "172.18.", "172.19.",
                      "172.30.", "172.31.", "192.168.", "127.")
 
 
-# Operator IP whitelist: exact IPs + CIDRs that bypass warn/blacklist
-# accounting entirely (LB / health-prober / mesh ranges that must never
-# be banned for unattested probe traffic). Fail-closed defaults: trusts
-# nothing but loopback; every other entry is explicit env.
-#   DIRECT_ACCESS_WHITELIST_IPS="203.0.113.10,203.0.113.11"
-#   DIRECT_ACCESS_WHITELIST_CIDRS="172.30.0.0/16,10.0.0.0/8"
+# Operator IP whitelist: CIDR ranges that bypass warn/blacklist accounting
+# entirely (LB / health-prober / mesh ranges that must never be banned for
+# unattested probe traffic). Fail-closed defaults: trusts nothing but
+# loopback; every other entry is explicit env. Ranges only — a single IP
+# is a /32 (IPv6 /128); bare IPs are normalized to host routes.
+#   DIRECT_ACCESS_WHITELIST_CIDRS="172.30.0.0/16,10.0.0.0/8,203.0.113.10/32"
 #   DIRECT_ACCESS_WHITELIST_LOOPBACK="true"  (127.0.0.1/::1; set false to enforce)
-WHITELIST_IPS = {
-    part.strip()
-    for part in os.getenv("DIRECT_ACCESS_WHITELIST_IPS", "").split(",")
-    if part.strip()
-}
 WHITELIST_LOOPBACK = os.getenv("DIRECT_ACCESS_WHITELIST_LOOPBACK", "true").lower() in (
     "1", "true", "yes",
 )
@@ -65,10 +61,33 @@ WHITELIST_LOOPBACK = os.getenv("DIRECT_ACCESS_WHITELIST_LOOPBACK", "true").lower
 
 def _parse_whitelist_cidrs() -> list:
     nets = []
-    for part in os.getenv("DIRECT_ACCESS_WHITELIST_CIDRS", "").split(","):
-        part = part.strip()
+    parts = [
+        part.strip()
+        for part in os.getenv("DIRECT_ACCESS_WHITELIST_CIDRS", "").split(",")
+    ]
+    legacy = [
+        part.strip()
+        for part in os.getenv("DIRECT_ACCESS_WHITELIST_IPS", "").split(",")
+        if part.strip()
+    ]
+    if legacy:
+        logger.warning(
+            "direct_access_whitelist_ips_deprecated",
+            count=len(legacy),
+            hint="move entries to DIRECT_ACCESS_WHITELIST_CIDRS as /32 ranges",
+        )
+        parts.extend(legacy)
+    for part in parts:
         if not part:
             continue
+        if "/" not in part:
+            # Bare IP -> host route (ranges are the only mechanism).
+            try:
+                addr = ipaddress.ip_address(part)
+            except ValueError:
+                logger.warning("direct_access_whitelist_bad_cidr", cidr=part)
+                continue
+            part = f"{part}/32" if addr.version == 4 else f"{part}/128"
         try:
             nets.append(ipaddress.ip_network(part, strict=False))
         except ValueError:
@@ -87,14 +106,12 @@ def is_internal_ip(ip: str) -> bool:
 def is_whitelisted_ip(ip: str) -> bool:
     """True when an IP bypasses warn/blacklist accounting entirely.
 
-    Exact-match first (also covers non-IP client identifiers such as
-    Starlette's "testclient"), then loopback, then CIDR containment.
-    Invalid CIDRs are skipped at parse time with a warning — never fatal.
+    Ranges only: loopback (unless disabled), then CIDR containment.
+    Non-IP identifiers never match. Invalid CIDRs are skipped at parse
+    time with a warning — never fatal.
     """
     if not ip:
         return False
-    if ip in WHITELIST_IPS:
-        return True
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
