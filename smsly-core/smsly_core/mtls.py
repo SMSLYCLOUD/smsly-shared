@@ -86,21 +86,44 @@ def is_spire_available() -> bool:
         return False
 
 
-def _svid_files_present() -> bool:
-    return all(
-        p.exists()
-        for p in (SVID_DIR / "svid.0.pem", SVID_DIR / "svid.0.key", SVID_DIR / "bundle.0.pem")
+def _resolve_svid_files() -> Optional[tuple[Path, Path, Path]]:
+    """Locate (cert, key, bundle) across normalized and indexed SPIRE paths."""
+    env_cert = os.getenv("SPIFFE_SVID_CERT_PATH")
+    env_key = os.getenv("SPIFFE_SVID_KEY_PATH")
+    env_bundle = os.getenv("SPIFFE_BUNDLE_PATH")
+    if env_cert and env_key and env_bundle:
+        p_triple = (Path(env_cert), Path(env_key), Path(env_bundle))
+        if all(p.is_file() for p in p_triple):
+            return p_triple
+
+    dirs: list[Path] = []
+    for d in (Path(os.getenv("SPIFFE_SVID_DIR", str(SVID_DIR))), SVID_DIR, Path("/opt/spire/svids")):
+        if d not in dirs:
+            dirs.append(d)
+
+    candidates = (
+        ("cert.pem", "key.pem", "bundle.pem"),
+        ("svid.0.pem", "svid.0.key", "bundle.0.pem"),
     )
+    for d in dirs:
+        for c_cert, c_key, c_bundle in candidates:
+            triple = (d / c_cert, d / c_key, d / c_bundle)
+            if all(p.is_file() for p in triple):
+                return triple
+    return None
+
+
+def _svid_files_present() -> bool:
+    return _resolve_svid_files() is not None
 
 
 def _load_from_files() -> ssl.SSLContext:
-    cert = SVID_DIR / "svid.0.pem"
-    key = SVID_DIR / "svid.0.key"
-    bundle = SVID_DIR / "bundle.0.pem"
-    if not _svid_files_present():
+    resolved = _resolve_svid_files()
+    if resolved is None:
         raise FileNotFoundError(
-            f"SVID files missing in {SVID_DIR} (need svid.0.pem, svid.0.key, bundle.0.pem)"
+            f"SVID files missing in {SVID_DIR} (need cert.pem/key.pem/bundle.pem or svid.0.pem/svid.0.key/bundle.0.pem)"
         )
+    cert, key, bundle = resolved
     return _build_context(
         certfile=str(cert),
         keyfile=str(key),
@@ -127,7 +150,6 @@ def _build_context(certfile: str, keyfile: str, cafile: str) -> ssl.SSLContext:
     ctx.verify_mode = ssl.CERT_REQUIRED
     ctx.check_hostname = False  # SPIFFE URI SANs, not DNS — app-layer allowlist validates identity
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
-    ctx.set_ciphers(_TLS_CIPHERS)
     return ctx
 
 
@@ -191,15 +213,37 @@ def create_mesh_client_context() -> ssl.SSLContext:
     return ctx
 
 
+def _is_internal_mtls_url(url: str) -> bool:
+    """True if `url` targets an internal SPIFFE mTLS listener, not a public ACME edge.
+
+    Internal listeners are identified by the mesh ports (:8443 mTLS, :8080
+    per-service mTLS) or by a bare/single-label service host. Public edge
+    hostnames (e.g. https://smsly-email-741c3b.trulay.site) keep the
+    system-CA mesh context.
+    """
+    if f":{MESH_MTLS_PORT}" in url or ":8080" in url:
+        return True
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+        if not host:
+            return False
+        if "." not in host or host.endswith((".internal", ".local", ".svc", ".cluster.local")):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def verify_for_url(url: str, prefer_mtls: bool = True):
     """Route any mesh URL to the correct httpx `verify` setting.
 
     - http://...                    -> False (plain mesh, no TLS)
-    - https://...:8443...           -> SVID client context (direct mTLS);
+    - internal https://...          -> SVID client context (direct mTLS);
                                        falls back to mesh context with a
                                        warning when SVIDs are unavailable
-    - other https://...             -> mesh context (system CA, no hostname
-                                       check) — Traefik edge termination
+    - public https://...            -> mesh context (system CA, no hostname
+                                       check) — Traefik/Caddy edge termination
 
     Never raises: worst case returns True (standard verification), matching
     httpx's default.
@@ -207,7 +251,7 @@ def verify_for_url(url: str, prefer_mtls: bool = True):
     try:
         if not url.startswith("https://"):
             return False
-        if f":{MESH_MTLS_PORT}" in url and prefer_mtls:
+        if prefer_mtls and _is_internal_mtls_url(url):
             try:
                 return create_client_ssl_context()
             except Exception as e:
@@ -225,6 +269,9 @@ def verify_for_url(url: str, prefer_mtls: bool = True):
 # ---------------------------------------------------------------------------
 
 def _svid_cert_path() -> Path:
+    resolved = _resolve_svid_files()
+    if resolved is not None:
+        return resolved[0]
     return SVID_DIR / "svid.0.pem"
 
 

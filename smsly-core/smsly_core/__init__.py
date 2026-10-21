@@ -6,6 +6,18 @@ Shared utilities for SMSLYCLOUD microservices.
 
 __version__ = "0.5.0"
 
+# ---------------------------------------------------------------------------
+# Structured logging compatibility (stdlib loggers that receive structlog-style
+# keyword arguments). Installed first so any module-level `logging.getLogger`
+# created afterwards accepts them instead of raising TypeError.
+# ---------------------------------------------------------------------------
+from smsly_core.structured_logging import (  # noqa: E402
+    KwArgLogger,
+    install_structured_logger,
+)
+
+install_structured_logger()
+
 # Database
 from smsly_core.database import create_async_engine, get_db, AsyncSessionLocal
 
@@ -190,6 +202,13 @@ from smsly_core.mtls import (
     start_svid_watcher,
 )
 
+# Mesh URL helpers (placeholder detection)
+from smsly_core.mesh import (
+    PLACEHOLDER_HOST_SUFFIXES,
+    is_placeholder_mesh_url,
+    is_internal_mesh_url,
+)
+
 __all__ = [
     # Database
     "create_async_engine",
@@ -315,5 +334,12 @@ __all__ = [
     "svid_expiring_soon",
     "is_cert_expired_error",
     "start_svid_watcher",
+    # Mesh URL helpers
+    "PLACEHOLDER_HOST_SUFFIXES",
+    "is_placeholder_mesh_url",
+    "is_internal_mesh_url",
+    # Structured logging compatibility
+    "KwArgLogger",
+    "install_structured_logger",
 ]
 
