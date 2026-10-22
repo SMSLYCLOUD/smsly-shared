@@ -10,6 +10,7 @@ from fastapi import APIRouter, Response
 from pydantic import BaseModel
 from enum import Enum
 import structlog
+from sqlalchemy import text
 
 logger = structlog.get_logger(__name__)
 
@@ -39,7 +40,12 @@ async def check_database(engine) -> ComponentHealth:
     try:
         start = time.time()
         async with engine.connect() as conn:
-            await conn.execute("SELECT 1")
+            # SQLAlchemy 2.x rejects bare strings in execute(); without text()
+            # this raised `ArgumentError: Textual SQL expression ... should be
+            # explicitly declared with text('SELECT 1')`, which the caller's
+            # except-block swallowed as "unhealthy" — so the service reported
+            # a broken database while the database was perfectly fine.
+            await conn.execute(text("SELECT 1"))
         latency = (time.time() - start) * 1000
         return ComponentHealth(status="connected", latency_ms=round(latency, 2))
     except Exception as e:
