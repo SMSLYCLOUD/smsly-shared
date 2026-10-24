@@ -87,8 +87,8 @@ class AuditStreamConsumer:
                     claimed = await self._redis.xautoclaim(
                         STREAM_KEY, GROUP, CONSUMER_NAME, min_idle_time=CLAIM_IDLE_MS, count=BATCH
                     )
-                    if claimed and claimed[0]:
-                        await self._process(claimed[0])
+                    if claimed and len(claimed) > 1 and claimed[1]:
+                        await self._process(claimed[1])
                 except Exception:
                     pass
 
