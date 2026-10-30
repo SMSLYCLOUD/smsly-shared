@@ -344,6 +344,15 @@ class TrustScoreEngine:
             return None
         
         try:
+            import ipaddress
+            parsed = ipaddress.ip_address(ip_address)
+            if parsed.is_private or parsed.is_loopback or parsed.is_link_local or parsed.is_unspecified or parsed.is_reserved:
+                # Internal/mesh container IPs (e.g. 172.18.x.x, 10.x.x.x, 127.0.0.1) cannot be used for location consistency
+                return None
+        except Exception:
+            return None
+
+        try:
             # Get historical IPs for this phone
             history = await self.phone_db.get_ip_history(phone_hash)
             
@@ -356,10 +365,19 @@ class TrustScoreEngine:
             
             known_prefixes = set()
             for record in history:
-                if record.get("ip"):
-                    prefix = ".".join(record["ip"].split(".")[:2])
-                    known_prefixes.add(prefix)
+                rec_ip = record.get("ip")
+                if rec_ip:
+                    try:
+                        rec_addr = ipaddress.ip_address(rec_ip)
+                        if not (rec_addr.is_private or rec_addr.is_loopback or rec_addr.is_link_local):
+                            prefix = ".".join(rec_ip.split(".")[:2])
+                            known_prefixes.add(prefix)
+                    except Exception:
+                        pass
             
+            if not known_prefixes:
+                return None
+
             if current_prefix in known_prefixes:
                 return TrustSignal(
                     source="location_db",
