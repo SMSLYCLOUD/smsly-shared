@@ -61,7 +61,17 @@ def setup_cors(
         allow_headers = [
             "Authorization",
             "Content-Type",
+            "Accept",
             "X-Request-ID",
+            "X-Workspace-ID",
+            "X-Project-ID",
+            "X-TRULAY-KEY-ID",
+            "X-TRULAY-SIGNATURE",
+            "X-TRULAY-TIMESTAMP",
+            "X-TRULAY-NONCE",
+            "X-TRULAY-SDK-KEY",
+            "X-TRULAY-API-KEY",
+            "X-TRULAY-IDEMPOTENCY-KEY",
             "X-Smsly-Key-Id",
             "X-Smsly-Signature",
         ]
