@@ -20,7 +20,13 @@ logger = logging.getLogger(__name__)
 _CHAIN_URL = os.getenv(
     "TRANSACTION_CHAIN_URL",
     os.getenv("SECURITY_GATEWAY_URL", "https://smsly-security-gateway:80") + "/chain",
-)
+).rstrip("/")
+
+_MESH_HEADERS = {
+    "X-Smsly-Validated": "true",
+    "X-Forwarded-Proto": "https",
+    "Content-Type": "application/json",
+}
 
 
 def _verify_for_url(url: str):
@@ -128,6 +134,7 @@ def queue_transaction_sync(
         resp = requests.post(
             f"{_CHAIN_URL}/v1/transactions",
             json=tx,
+            headers=_MESH_HEADERS,
             timeout=timeout,
             verify=_verify_for_url(_CHAIN_URL),
         )
@@ -149,6 +156,7 @@ def queue_transactions_bulk_sync(transactions: list[Dict[str, Any]], timeout: fl
         resp = requests.post(
             f"{_CHAIN_URL}/v1/transactions/bulk",
             json={"transactions": transactions},
+            headers=_MESH_HEADERS,
             timeout=timeout,
             verify=_verify_for_url(_CHAIN_URL),
         )
@@ -168,7 +176,11 @@ async def queue_transaction_async(**kwargs) -> Optional[str]:
     verify = _verify_for_url(_CHAIN_URL)
     try:
         async with httpx.AsyncClient(timeout=timeout, verify=verify) as client:
-            resp = await client.post(f"{_CHAIN_URL}/v1/transactions", json=tx)
+            resp = await client.post(
+                f"{_CHAIN_URL}/v1/transactions",
+                json=tx,
+                headers=_MESH_HEADERS,
+            )
             if resp.status_code in (200, 201):
                 return resp.json().get("tx_id")
         logger.warning("chain_tx_rejected status=%s", resp.status_code)

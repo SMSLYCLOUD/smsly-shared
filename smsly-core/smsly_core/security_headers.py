@@ -140,7 +140,6 @@ class SanitizedErrorMiddleware(BaseHTTPMiddleware):
             
             if self.is_production:
                 # Return generic error without details
-                from starlette.responses import JSONResponse
                 return JSONResponse(
                     status_code=500,
                     content={"detail": "Internal server error"},
