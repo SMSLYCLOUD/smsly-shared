@@ -241,14 +241,19 @@ def _extract_spiffe_from_cert_obj(cert) -> Optional[str]:
 
 def _is_valid_spiffe_id(spiffe_id: str) -> bool:
     """Validate SPIFFE ID format and trust domain."""
+    if not spiffe_id or not isinstance(spiffe_id, str):
+        return False
     if not spiffe_id.startswith("spiffe://"):
         return False
-    if not spiffe_id.startswith(f"spiffe://{SPIFFE_TRUST_DOMAIN}/"):
+    trust_domain = os.getenv("SPIFFE_TRUST_DOMAIN", SPIFFE_TRUST_DOMAIN)
+    prefix = f"spiffe://{trust_domain}/service/"
+    if not spiffe_id.startswith(prefix) and not spiffe_id.startswith(SPIFFE_ID_PREFIX):
         return False
-    if not spiffe_id.startswith(SPIFFE_ID_PREFIX):
+    active_prefix = prefix if spiffe_id.startswith(prefix) else SPIFFE_ID_PREFIX
+    parts = spiffe_id[len(active_prefix):]
+    if not parts or any(c.isspace() for c in parts):
         return False
-    parts = spiffe_id[len(SPIFFE_ID_PREFIX):]
-    if not parts or parts.isspace():
+    if ".." in parts or "?" in parts or "#" in parts or "//" in parts or parts.startswith("/") or parts.endswith("/"):
         return False
     return True
 

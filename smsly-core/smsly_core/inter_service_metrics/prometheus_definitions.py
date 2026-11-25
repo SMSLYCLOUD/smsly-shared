@@ -23,6 +23,16 @@ try:
     PROMETHEUS_AVAILABLE = True
 except ImportError:
     PROMETHEUS_AVAILABLE = False
+    CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
+
+    def generate_latest(*args, **kwargs) -> bytes:  # type: ignore[misc]
+        """Fallback stub when prometheus_client is not installed."""
+        return b""
+
+    def make_asgi_app(*args, **kwargs):  # type: ignore[misc]
+        """Fallback stub when prometheus_client is not installed."""
+        return None
+
     logger.warning("prometheus_client not installed, using simple metrics")
 
 

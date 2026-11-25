@@ -89,12 +89,18 @@ class GatewayGuardMiddleware(BaseHTTPMiddleware):
 
     def _is_public_path(self, path: str) -> bool:
         """Check if path is public (bypasses auth)."""
-        path_normalized = path.rstrip("/")
-        return (
-            path_normalized in self.public_paths or
-            path in self.public_paths or
-            any(path_normalized.startswith(p.rstrip("/")) for p in self.public_paths)
-        )
+        if not path:
+            return False
+        path_normalized = path.rstrip("/") or "/"
+        if path in self.public_paths or path_normalized in self.public_paths:
+            return True
+        for p in self.public_paths:
+            p_clean = p.rstrip("/")
+            if not p_clean:
+                continue  # "/" must only match exact root path above
+            if path_normalized == p_clean or path_normalized.startswith(p_clean + "/"):
+                return True
+        return False
 
     def _get_client_ip(self, request: Request) -> str:
         """Extract real client IP from headers."""
@@ -133,12 +139,9 @@ class GatewayGuardMiddleware(BaseHTTPMiddleware):
             )
 
         # STRICT: peer cert only — X-SPIFFE-ID headers are forgeable and ignored
-        peer_cert_der = None
         try:
-            conn = request.scope.get("connection")
-            ssl_obj = getattr(conn, "_ssl_object", None) if conn else None
-            if ssl_obj is not None:
-                peer_cert_der = ssl_obj.getpeercert(binary_form=True)
+            from smsly_core.spiffe_auth import extract_peer_cert_der
+            peer_cert_der = extract_peer_cert_der(request)
         except Exception:
             peer_cert_der = None
         result = self._spiffe_validator.validate(
@@ -153,7 +156,7 @@ class GatewayGuardMiddleware(BaseHTTPMiddleware):
                 extra={
                     "service": self.service_name,
                     "path": path,
-                    "method": result.method.value,
+                    "method": getattr(result.method, "value", result.method),
                     "spiffe_id": result.spiffe_id,
                 }
             )

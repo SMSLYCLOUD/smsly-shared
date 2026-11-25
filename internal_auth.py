@@ -96,9 +96,13 @@ class InternalAuthMiddleware(BaseHTTPMiddleware):
                 content={"error": "authentication_unavailable", "detail": "Auth service not configured"}
             )
 
-        headers = {k: v for k, v in request.headers.items()}
+        try:
+            from smsly_core.spiffe_auth import extract_peer_cert_der
+            peer_cert_der = extract_peer_cert_der(request)
+        except Exception:
+            peer_cert_der = None
         result = self._spiffe_validator.validate(
-            headers=headers,
+            peer_cert_der=peer_cert_der,
             method=request.method,
             path=request.url.path,
         )

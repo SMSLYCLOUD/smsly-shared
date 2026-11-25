@@ -377,7 +377,11 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
             "1", "true", "yes",
         ):
             return False
-        raw = request.headers.get("x-smsly-validated", "") or ""
+        raw = (
+            request.headers.get("x-trulay-validated")
+            or request.headers.get("x-smsly-validated", "")
+            or ""
+        )
         if not any(p.strip().lower() == "true" for p in raw.split(",")):
             return False
         import ipaddress as _ip
@@ -413,12 +417,12 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
         path = request.url.path
 
         # Allow health checks and metrics (needed for orchestrators)
-        if (
-            path in self.excluded_paths
-            or os.getenv("TESTING") == "true"
-            or os.getenv("ENVIRONMENT") in ("test", "testing")
-            or (request.client and request.client.host == "testclient")
-        ):
+        _env = os.getenv("ENVIRONMENT", "").strip().lower()
+        _is_test_bypass = _env not in ("production", "staging", "prod") and (
+            os.getenv("TESTING") == "true"
+            or _env in ("test", "testing")
+        )
+        if path in self.excluded_paths or _is_test_bypass:
             return await call_next(request)
 
         # mTLS listeners (:8443 ingest) authenticate callers via SPIFFE

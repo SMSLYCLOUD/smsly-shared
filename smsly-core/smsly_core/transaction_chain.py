@@ -28,6 +28,7 @@ _CHAIN_URL = os.getenv(
 ).rstrip("/")
 
 _MESH_HEADERS = {
+    "X-TRULAY-Validated": "true",
     "X-Smsly-Validated": "true",
     "X-Forwarded-Proto": "https",
     "Content-Type": "application/json",

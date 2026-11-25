@@ -151,9 +151,15 @@ async def require_internal_auth_fastapi(request, config: InternalAuthConfig):
     from fastapi import HTTPException
     
     # Check if path is public
-    path = request.url.path.rstrip("/")
-    if any(path.startswith(p.rstrip("/")) for p in config.public_paths):
-        return
+    path = request.url.path.rstrip("/") or "/"
+    for p in config.public_paths:
+        p_clean = p.rstrip("/")
+        if not p_clean:
+            if path == "/":
+                return
+            continue
+        if path == p_clean or path.startswith(p_clean + "/"):
+            return
     
     # Skip OPTIONS for CORS
     if request.method == "OPTIONS":
@@ -217,8 +223,16 @@ class DjangoInternalAuthMixin:
         """Check if path is public."""
         if not self.config:
             return False
-        path = path.rstrip("/")
-        return any(path.startswith(p.rstrip("/")) for p in self.config.public_paths)
+        path = path.rstrip("/") or "/"
+        for p in self.config.public_paths:
+            p_clean = p.rstrip("/")
+            if not p_clean:
+                if path == "/":
+                    return True
+                continue
+            if path == p_clean or path.startswith(p_clean + "/"):
+                return True
+        return False
     
     def validate_request(self, request) -> bool:
         """Validate the request has valid internal credentials."""

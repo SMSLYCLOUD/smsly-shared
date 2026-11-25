@@ -143,16 +143,28 @@ class RedisRateLimiter:
     Uses Lua scripts for atomic operations.
     """
     
-    def __init__(self, redis_client, rate: int = 100, window: int = 60):
+    def __init__(self, redis_client, rate: int = 100, window: int = 60, fail_closed: Optional[bool] = None):
         """
         Args:
             redis_client: Async Redis client
             rate: Requests per window
             window: Window size in seconds
+            fail_closed: If True, reject requests when Redis fails (defaults to True in production)
         """
+        import os as _os
         self.redis = redis_client
         self.rate = rate
         self.window = window
+        if fail_closed is None:
+            env = _os.getenv("ENVIRONMENT", "development").strip().lower()
+            env_flag = _os.getenv("RATE_LIMIT_FAIL_CLOSED", "").strip().lower()
+            if env_flag in ("1", "true", "yes"):
+                fail_closed = True
+            elif env_flag in ("0", "false", "no"):
+                fail_closed = False
+            else:
+                fail_closed = env in ("production", "staging", "prod")
+        self.fail_closed = fail_closed
         self._script_sha: Optional[str] = None
     
     async def _ensure_script(self) -> str:
@@ -171,10 +183,10 @@ class RedisRateLimiter:
         Returns:
             RateLimitInfo with decision
         """
-        script_sha = await self._ensure_script()
         now = int(time.time())
         
         try:
+            script_sha = await self._ensure_script()
             result = await self.redis.evalsha(
                 script_sha,
                 1,
@@ -194,8 +206,16 @@ class RedisRateLimiter:
                 retry_after=int(retry_after) if retry_after else None,
             )
         except Exception as e:
-            logger.error("Rate limit check failed", error=str(e))
-            # Fail open in case of Redis issues
+            logger.error("Rate limit check failed", error=str(e), fail_closed=self.fail_closed)
+            if self.fail_closed:
+                return RateLimitInfo(
+                    allowed=False,
+                    remaining=0,
+                    limit=self.rate,
+                    reset_at=int(time.time()) + self.window,
+                    retry_after=self.window,
+                )
+            # Fail open in non-production environments when not configured to fail closed
             return RateLimitInfo(
                 allowed=True,
                 remaining=self.rate,

@@ -81,9 +81,11 @@ def hash_phone(phone: str, pepper: str = "") -> str:
     
     Args:
         phone: E.164 phone number
-        pepper: Optional secret pepper
+        pepper: Optional secret pepper (defaults to PHONE_HASH_PEPPER env var)
         
     Returns:
         SHA-256 hash
     """
-    return hashlib.sha256(f"{pepper}:{phone}".encode()).hexdigest()
+    import os as _os
+    effective_pepper = pepper if pepper else _os.getenv("PHONE_HASH_PEPPER", "")
+    return hashlib.sha256(f"{effective_pepper}:{phone}".encode()).hexdigest()

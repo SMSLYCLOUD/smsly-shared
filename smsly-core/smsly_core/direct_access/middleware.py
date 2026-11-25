@@ -192,14 +192,8 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
             logger.error("direct_access_no_validator")
             return False
 
-        peer_cert_der = None
-        try:
-            conn = request.scope.get("connection")
-            ssl_obj = getattr(conn, "_ssl_object", None) if conn else None
-            if ssl_obj is not None:
-                peer_cert_der = ssl_obj.getpeercert(binary_form=True)
-        except Exception:
-            peer_cert_der = None
+        from smsly_core.spiffe_auth import extract_peer_cert_der
+        peer_cert_der = extract_peer_cert_der(request)
         result = self._spiffe_validator.validate(
             peer_cert_der=peer_cert_der,
             method=request.method,
@@ -249,7 +243,11 @@ class DirectAccessProtectionMiddleware(BaseHTTPMiddleware):
             "1", "true", "yes",
         ):
             return False
-        raw = request.headers.get("x-smsly-validated", "") or ""
+        raw = (
+            request.headers.get("x-trulay-validated")
+            or request.headers.get("x-smsly-validated", "")
+            or ""
+        )
         if not any(p.strip().lower() == "true" for p in raw.split(",")):
             return False
         # Pin: exact IPs (GATEWAY_IPS) and/or CIDRs (GATEWAY_ALLOWED_IPS).

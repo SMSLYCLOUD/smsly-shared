@@ -75,9 +75,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         import os
-        if (
+        _env = os.getenv("ENVIRONMENT", "").strip().lower()
+        if _env not in ("production", "staging", "prod") and (
             os.getenv("TESTING") == "true"
-            or os.getenv("ENVIRONMENT") in ("test", "testing")
+            or _env in ("test", "testing")
             or (request.client and request.client.host == "testclient")
         ):
             return await call_next(request)
@@ -118,7 +119,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if self._verify_attested_mesh(request):
             request.state.authenticated = True
             request.state.auth_source = "attested-mesh"
-            request.state.spiffe_id = request.headers.get("x-smsly-key-id", "")
+            request.state.spiffe_id = (
+                request.headers.get("x-trulay-key-id")
+                or request.headers.get("x-smsly-key-id", "")
+            )
             return await call_next(request)
 
         # Authentication failed
@@ -143,7 +147,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "1", "true", "yes",
         ):
             return False
-        raw = request.headers.get("x-smsly-validated", "") or ""
+        raw = (
+            request.headers.get("x-trulay-validated")
+            or request.headers.get("x-smsly-validated", "")
+            or ""
+        )
         if not any(p.strip().lower() == "true" for p in raw.split(",")):
             return False
         client = request.client

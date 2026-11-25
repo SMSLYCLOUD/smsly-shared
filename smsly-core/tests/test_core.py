@@ -372,3 +372,71 @@ class TestRetry:
         cb.record_failure()
         
         assert cb.state == "open"
+
+
+class TestSpiffeAndHeadersHardening:
+    """Tests for SPIFFE ID validation, X-TRULAY-* dual-header support, and fail-closed rate limiting."""
+
+    def test_spiffe_id_validation_blocks_traversal_and_whitespace(self):
+        from smsly_core.spiffe_auth import _is_valid_spiffe_id
+
+        assert _is_valid_spiffe_id("spiffe://ecosystem.local/service/smsly-gateway") is True
+        assert _is_valid_spiffe_id("spiffe://ecosystem.local/service/smsly-gateway/../admin") is False
+        assert _is_valid_spiffe_id("spiffe://ecosystem.local/service/smsly-gateway?role=admin") is False
+        assert _is_valid_spiffe_id("spiffe://ecosystem.local/service/smsly-gateway#frag") is False
+        assert _is_valid_spiffe_id("spiffe://ecosystem.local/service/smsly gateway") is False
+        assert _is_valid_spiffe_id("spiffe://ecosystem.local/service/") is False
+
+    def test_parse_signed_headers_dual_trulay_and_smsly(self):
+        from smsly_core.internal_auth import create_signed_headers, parse_signed_headers
+
+        assert parse_signed_headers({}, "abc") is None
+        headers = create_signed_headers(
+            secret="test-secret",
+            key_id="key_trulay_1",
+            method="POST",
+            path="/v1/sms/send",
+            body=b'{"to":"+15551234567"}',
+        )
+        assert "X-TRULAY-Key-ID" in headers
+        assert "X-TRULAY-Signature" in headers
+        assert "X-SMSLY-Key-ID" in headers
+        assert "X-SMSLY-Signature" in headers
+
+        # Parse using X-TRULAY-* only (lowercase)
+        trulay_only = {
+            "x-trulay-key-id": headers["X-TRULAY-Key-ID"],
+            "x-trulay-timestamp": headers["X-TRULAY-Timestamp"],
+            "x-trulay-nonce": headers["X-TRULAY-Nonce"],
+            "x-trulay-signature": headers["X-TRULAY-Signature"],
+            "x-trulay-method": "POST",
+            "x-trulay-path": "/v1/sms/send",
+        }
+        parsed = parse_signed_headers(trulay_only, "bodyhash")
+        assert parsed is not None
+        assert parsed.key_id == "key_trulay_1"
+        assert parsed.signature == headers["X-TRULAY-Signature"]
+
+    @pytest.mark.asyncio
+    async def test_redis_rate_limiter_fail_closed_in_production(self):
+        from smsly_core.rate_limit import RedisRateLimiter
+
+        class FailingRedis:
+            async def script_load(self, script):
+                raise RuntimeError("Redis connection refused")
+
+        limiter_closed = RedisRateLimiter(FailingRedis(), rate=10, window=60, fail_closed=True)
+        res_closed = await limiter_closed.check("acct_1")
+        assert res_closed.allowed is False
+        assert res_closed.remaining == 0
+
+        limiter_open = RedisRateLimiter(FailingRedis(), rate=10, window=60, fail_closed=False)
+        res_open = await limiter_open.check("acct_1")
+        assert res_open.allowed is True
+
+    def test_transaction_chain_headers_include_trulay_validated(self):
+        from smsly_core.transaction_chain import _chain_headers
+
+        headers = _chain_headers()
+        assert headers.get("X-TRULAY-Validated") == "true"
+        assert headers.get("X-Smsly-Validated") == "true"
