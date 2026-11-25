@@ -180,6 +180,7 @@ from smsly_core.transaction_chain import (
     queue_transaction_sync,
     queue_transactions_bulk_sync,
     queue_transaction_async,
+    queue_transaction,
 )
 
 # SPIFFE mTLS helpers (dual-port: :8080 Traefik HTTP, :8443 direct mTLS)
@@ -317,6 +318,7 @@ __all__ = [
     "queue_transaction_sync",
     "queue_transactions_bulk_sync",
     "queue_transaction_async",
+    "queue_transaction",
     # SPIFFE mTLS helpers
     "MESH_HTTP_PORT",
     "MESH_MTLS_PORT",
