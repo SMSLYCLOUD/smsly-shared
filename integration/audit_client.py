@@ -72,7 +72,8 @@ def _expand_port_templates(url: str, port: str) -> str:
 
 
 def _default_audit_url() -> str:
-    return "https://smsly-security-gateway:80/api/v1/audit/events"
+    # Direct-to-audit (Phase 4 SPIFFE mTLS via sidecar). Bulk endpoint.
+    return "https://smsly-audit-log-service:8443/v1/audit/events/bulk"
 
 
 def _resolve_audit_url() -> str:
@@ -81,7 +82,7 @@ def _resolve_audit_url() -> str:
     raw = os.getenv("AUDIT_URL", default_url).strip() or default_url
     port = os.getenv("PORT", "8000").strip() or "8000"
     url = _expand_port_templates(raw, port)
-    if re.search(r"\$\{?PORT|PORT", url):
+    if re.search(r"\$\{?PORT|\bPORT\b", url):
         logger.warning("invalid_audit_url_template url=%s", raw)
         return default_url
     return url.rstrip("/")
@@ -91,6 +92,57 @@ AUDIT_URL = _resolve_audit_url()
 
 SERVICE_NAME = os.getenv("SERVICE_NAME", "unknown-service")
 SERVICE_SECRET = os.getenv("SERVICE_SECRET", "")
+
+
+def _svid_ssl_context():
+    """SPIFFE client-cert context from fetched SVID files (stdlib only).
+
+    Resolves valid SVIDs via smsly_core.mtls._resolve_svid_files() first so
+    expired shared-volume leaf certs are skipped when valid SVIDs exist.
+    """
+    import ssl as _ssl
+    resolved = None
+    try:
+        from smsly_core.mtls import _resolve_svid_files
+        triple = _resolve_svid_files()
+        if triple:
+            resolved = tuple(str(p) for p in triple)
+    except Exception:
+        resolved = None
+
+    if resolved is None:
+        env_cert = os.getenv("SPIFFE_SVID_CERT_PATH", "")
+        env_key = os.getenv("SPIFFE_SVID_KEY_PATH", "")
+        env_bundle = os.getenv("SPIFFE_BUNDLE_PATH", "")
+        env_dir = os.getenv("SPIFFE_SVID_DIR", "/opt/spire/svids")
+        candidates = []
+        if env_dir and env_dir != "/opt/spire/svids":
+            for c, k, b in (("cert.pem", "key.pem", "bundle.pem"), ("svid.0.pem", "svid.0.key", "bundle.0.pem")):
+                candidates.append((os.path.join(env_dir, c), os.path.join(env_dir, k), os.path.join(env_dir, b)))
+        if env_cert and env_key and env_bundle:
+            candidates.append((env_cert, env_key, env_bundle))
+        for d in (env_dir, "/opt/spire/svids"):
+            for c, k, b in (("cert.pem", "key.pem", "bundle.pem"), ("svid.0.pem", "svid.0.key", "bundle.0.pem")):
+                candidates.append((os.path.join(d, c), os.path.join(d, k), os.path.join(d, b)))
+        for triple in candidates:
+            if all(os.path.isfile(p) for p in triple):
+                resolved = triple
+                break
+
+    if resolved is None:
+        return None
+    cert, key, bundle = resolved
+    try:
+        ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+        ctx.load_cert_chain(certfile=cert, keyfile=key)
+        ctx.load_verify_locations(cafile=bundle)
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_REQUIRED
+        ctx.minimum_version = _ssl.TLSVersion.TLSv1_2
+        return ctx
+    except Exception as exc:
+        logger.warning("svid_context_failed error=%s", exc)
+        return None
 
 # Tuning - tolerant parsing (Grid may inject false/empty for unset numerics)
 def _env_int(key, default):
@@ -343,6 +395,7 @@ class AuditClient:
 
     def __init__(self):
         self._http: Optional[httpx.AsyncClient] = None
+        self._http_created: float = 0
         self._circuit = CircuitBreaker()
         self._buffer = FallbackBuffer()
         self._batch: List[AuditEvent] = []
@@ -351,21 +404,43 @@ class AuditClient:
         self._running = False
         self._service_name = SERVICE_NAME
 
+    def _open_client(self) -> None:
+        """(Re)build the HTTP pool. SVID client certs first, legacy fallback."""
+        _svid_ctx = _svid_ssl_context()
+        if _svid_ctx is not None:
+            _verify = _svid_ctx
+        else:
+            try:
+                from smsly_core.mtls import verify_for_url as _vf
+                _verify = _vf(AUDIT_URL)
+            except Exception:
+                _verify = True
+        self._http = httpx.AsyncClient(
+            timeout=HTTP_TIMEOUT_S,
+            verify=_verify,
+        )
+        self._http_created = time.time()
+
+    async def _maybe_rotate_client(self) -> None:
+        """Rebuild the pool past half the SVID TTL (1h): a static client
+        would otherwise present an expired cert within the hour."""
+        if self._http is None:
+            self._open_client()
+            return
+        if time.time() - self._http_created > 1800:
+            try:
+                await self._http.aclose()
+            except Exception:
+                pass
+            self._open_client()
+
     # ---- Lifecycle ----
 
     async def start(self):
         if self._running:
             return
         self._running = True
-        try:
-            from smsly_core.mtls import verify_for_url as _vf
-            _verify = _vf(AUDIT_URL)
-        except Exception:
-            _verify = True
-        self._http = httpx.AsyncClient(
-            timeout=HTTP_TIMEOUT_S,
-            verify=_verify,
-        )
+        self._open_client()
         self._flush_task = asyncio.create_task(self._flush_loop())
         logger.info("audit_client_started service=%s", self._service_name)
 
@@ -485,6 +560,9 @@ class AuditClient:
         events = self._batch[:]
         self._batch.clear()
 
+        # Rotate the pool past half SVID TTL so the client cert never expires.
+        await self._maybe_rotate_client()
+
         # Circuit breaker check
         if self._circuit.is_open:
             logger.warning("audit_circuit_open_buffering count=%d", len(events))
@@ -581,7 +659,7 @@ class AuditClient:
                     }
                     assert self._http is not None
                     response = await self._http.post(
-                AUDIT_URL, content=body, headers=headers
+                        AUDIT_URL, content=body, headers=headers
                     )
                     if response.status_code < 400:
                         self._circuit.record_success()

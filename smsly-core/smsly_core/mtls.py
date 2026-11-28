@@ -86,31 +86,79 @@ def is_spire_available() -> bool:
         return False
 
 
+def _is_cert_valid_now(cert_path: Path) -> bool:
+    """Return True ONLY when the leaf cert parses cleanly and is currently valid (fail-closed)."""
+    try:
+        from cryptography import x509 as _x509
+
+        data = cert_path.read_bytes()
+        try:
+            cert = _x509.load_pem_x509_certificate(data)
+        except ValueError:
+            cert = _x509.load_der_x509_certificate(data)
+        now = datetime.now(timezone.utc)
+        nb = getattr(cert, "not_valid_before_utc", None)
+        if nb is None:
+            nb = cert.not_valid_before
+        na = getattr(cert, "not_valid_after_utc", None)
+        if na is None:
+            na = cert.not_valid_after
+        if nb.tzinfo is None:
+            nb = nb.replace(tzinfo=timezone.utc)
+        if na.tzinfo is None:
+            na = na.replace(tzinfo=timezone.utc)
+        return nb <= now < na
+    except Exception as exc:
+        logger.warning("cert_validity_check_failed path=%s error=%s", cert_path, exc)
+        return False
+
+
 def _resolve_svid_files() -> Optional[tuple[Path, Path, Path]]:
-    """Locate (cert, key, bundle) across normalized and indexed SPIRE paths."""
+    """Locate (cert, key, bundle), skipping expired leaf certs when a valid fallback exists."""
+    env_dir_raw = os.getenv("SPIFFE_SVID_DIR", "").strip()
     env_cert = os.getenv("SPIFFE_SVID_CERT_PATH")
     env_key = os.getenv("SPIFFE_SVID_KEY_PATH")
     env_bundle = os.getenv("SPIFFE_BUNDLE_PATH")
+
+    candidates = (
+        ("cert.pem", "key.pem", "bundle.pem"),
+        ("svid.0.pem", "svid.0.key", "bundle.0.pem"),
+    )
+
+    ordered: list[tuple[Path, Path, Path]] = []
+
+    # Prefer an explicit service-specific SPIFFE_SVID_DIR when container defaults
+    # point SPIFFE_SVID_CERT_PATH at the shared volume root cert.
+    if env_dir_raw and Path(env_dir_raw) != Path("/opt/spire/svids"):
+        env_dir = Path(env_dir_raw)
+        if not env_cert or Path(env_cert) == Path("/opt/spire/svids/cert.pem"):
+            for c_cert, c_key, c_bundle in candidates:
+                ordered.append((env_dir / c_cert, env_dir / c_key, env_dir / c_bundle))
+
     if env_cert and env_key and env_bundle:
-        p_triple = (Path(env_cert), Path(env_key), Path(env_bundle))
-        if all(p.is_file() for p in p_triple):
-            return p_triple
+        ordered.append((Path(env_cert), Path(env_key), Path(env_bundle)))
 
     dirs: list[Path] = []
     for d in (Path(os.getenv("SPIFFE_SVID_DIR", str(SVID_DIR))), SVID_DIR, Path("/opt/spire/svids")):
         if d not in dirs:
             dirs.append(d)
 
-    candidates = (
-        ("cert.pem", "key.pem", "bundle.pem"),
-        ("svid.0.pem", "svid.0.key", "bundle.0.pem"),
-    )
     for d in dirs:
         for c_cert, c_key, c_bundle in candidates:
-            triple = (d / c_cert, d / c_key, d / c_bundle)
-            if all(p.is_file() for p in triple):
+            ordered.append((d / c_cert, d / c_key, d / c_bundle))
+
+    seen: set[tuple[Path, Path, Path]] = set()
+    existing: list[tuple[Path, Path, Path]] = []
+    for triple in ordered:
+        if triple in seen:
+            continue
+        seen.add(triple)
+        if all(p.is_file() for p in triple):
+            if _is_cert_valid_now(triple[0]):
                 return triple
-    return None
+            existing.append(triple)
+
+    return existing[0] if existing else None
 
 
 def _svid_files_present() -> bool:
@@ -285,7 +333,9 @@ def get_svid_not_after() -> Optional[datetime]:
             cert = _x509.load_pem_x509_certificate(data)
         except ValueError:
             cert = _x509.load_der_x509_certificate(data)
-        na = cert.not_valid_after_utc
+        na = getattr(cert, "not_valid_after_utc", None)
+        if na is None:
+            na = cert.not_valid_after
         if na.tzinfo is None:
             na = na.replace(tzinfo=timezone.utc)
         return na

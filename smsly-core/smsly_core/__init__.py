@@ -18,8 +18,66 @@ from smsly_core.structured_logging import (  # noqa: E402
 
 install_structured_logger()
 
-# Database
-from smsly_core.database import create_async_engine, get_db, AsyncSessionLocal
+# Data Residency & Geo-Routing (EU GDPR)
+from smsly_core.residency import (
+    REGION_DEFAULT,
+    REGION_EU,
+    REGION_US,
+    ALLOWED_DATA_REGIONS,
+    DATA_REGION_HEADER,
+    EU_MEMBER_STATES,
+    EU_GDPR_COUNTRY_CODES,
+    DataResidencyError,
+    DataRegionMiddleware,
+    normalize_data_region,
+    region_env_suffix,
+    is_eu_country,
+    resolve_region_for_country,
+    is_eu_residency_strict,
+    is_region_strict,
+    get_data_region,
+    set_data_region,
+    reset_data_region,
+    data_region_context,
+    extract_region_from_identifier,
+    blind_index_email,
+    resolve_region_from_headers,
+)
+
+# Database (multi-region aware)
+from smsly_core.database import (
+    create_async_engine,
+    get_db,
+    get_engine,
+    get_all_engines,
+    get_session,
+    AsyncSessionLocal,
+    register_regional_engine,
+    init_regional_engines,
+    create_tables_all_regions,
+    check_all_databases_health,
+    close_engine,
+    close_db,
+    close_all_engines,
+    prepare_asyncpg_url_and_ssl,
+)
+
+# Multi-region Redis Router
+from smsly_core.redis_router import (
+    RegionalRedisRouter,
+    init_regional_redis,
+    get_regional_redis_router,
+    get_regional_redis,
+    close_regional_redis,
+    reset_regional_redis_router,
+)
+
+# Multi-region S3 / Object Storage
+from smsly_core.s3_storage import (
+    S3Config,
+    S3StorageAdapter,
+    RegionalS3Router,
+)
 
 # Health
 from smsly_core.health import create_health_router
@@ -211,10 +269,55 @@ from smsly_core.mesh import (
 )
 
 __all__ = [
+    # Data Residency & Geo-Routing
+    "REGION_DEFAULT",
+    "REGION_EU",
+    "REGION_US",
+    "ALLOWED_DATA_REGIONS",
+    "DATA_REGION_HEADER",
+    "EU_MEMBER_STATES",
+    "EU_GDPR_COUNTRY_CODES",
+    "DataResidencyError",
+    "DataRegionMiddleware",
+    "normalize_data_region",
+    "region_env_suffix",
+    "is_eu_country",
+    "resolve_region_for_country",
+    "is_eu_residency_strict",
+    "is_region_strict",
+    "get_data_region",
+    "set_data_region",
+    "reset_data_region",
+    "data_region_context",
+    "extract_region_from_identifier",
+    "blind_index_email",
+    "resolve_region_from_headers",
     # Database
     "create_async_engine",
     "get_db",
+    "get_engine",
+    "get_all_engines",
+    "get_session",
     "AsyncSessionLocal",
+    "register_regional_engine",
+    "init_regional_engines",
+    "create_tables_all_regions",
+    "check_all_databases_health",
+    "close_engine",
+    "close_db",
+    "close_all_engines",
+    "prepare_asyncpg_url_and_ssl",
+    # Multi-region Redis Router
+    "RegionalRedisRouter",
+    "init_regional_redis",
+    "get_regional_redis_router",
+    "get_regional_redis",
+    "close_regional_redis",
+    "reset_regional_redis_router",
+    # Multi-region S3 / Object Storage
+    "S3Config",
+    "S3StorageAdapter",
+    "RegionalS3Router",
     # Health
     "create_health_router",
     # API Keys

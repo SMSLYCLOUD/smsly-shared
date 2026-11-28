@@ -112,9 +112,11 @@ def validate_internal_secret(
     provided = request_headers.get(header_name) or request_headers.get(alt_header_name)
     
     if not provided:
-        logger.warning("internal_auth_missing_header", 
-                      header=header_name,
-                      alt_header=alt_header_name)
+        logger.warning(
+            "internal_auth_missing_header header=%s alt_header=%s",
+            header_name,
+            alt_header_name,
+        )
         return False
     
     # Check against all accepted secrets
@@ -190,9 +192,11 @@ async def require_internal_auth_fastapi(request, config: InternalAuthConfig):
     
     if not valid:
         client_ip = get_client_ip(headers, request.client.host if request.client else "")
-        logger.warning("internal_auth_rejected",
-                      path=path,
-                      client_ip=client_ip)
+        logger.warning(
+            "internal_auth_rejected path=%s client_ip=%s",
+            path,
+            client_ip,
+        )
         raise HTTPException(
             status_code=403,
             detail="Invalid service credentials"

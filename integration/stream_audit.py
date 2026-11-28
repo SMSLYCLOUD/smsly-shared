@@ -59,7 +59,7 @@ class RedisStreamAuditBus:
                 await self._redis.ping()
                 self._started = True
             except Exception as e:
-                logger.warning("audit_bus_redis_unavailable", error=str(e))
+                logger.warning("audit_bus_redis_unavailable error=%s", str(e))
                 self._redis = None
         return self._redis
 
@@ -70,7 +70,7 @@ class RedisStreamAuditBus:
             for event_type, payload in self._pending[:]:
                 await self._do_xadd(event_type, payload)
                 self._pending.remove((event_type, payload))
-        logger.info("audit_bus_started", stream=STREAM_KEY, mode=BUS_MODE)
+        logger.info("audit_bus_started stream=%s mode=%s", STREAM_KEY, BUS_MODE)
 
     async def stop(self):
         if self._redis:
@@ -120,7 +120,7 @@ class RedisStreamAuditBus:
             await self._do_xadd(event_type, payload)
             return True
         except Exception as e:
-            logger.warning("audit_bus_xadd_failed", error=str(e))
+            logger.warning("audit_bus_xadd_failed error=%s", str(e))
             if len(self._pending) < 10_000:
                 self._pending.append((event_type, payload))
             return False

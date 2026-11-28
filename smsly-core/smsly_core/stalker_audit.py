@@ -34,7 +34,7 @@ _BATCH = 50
 _FLUSH_INTERVAL = 2.0
 
 _BASE_URL = os.getenv(
-    "SECURITY_GATEWAY_URL", "https://smsly-security-gateway:80"
+    "SECURITY_GATEWAY_URL", "http://smsly-security-gateway:3000"
 ).rstrip("/")
 
 

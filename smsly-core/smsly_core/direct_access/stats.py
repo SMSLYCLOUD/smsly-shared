@@ -5,21 +5,30 @@ Functions for retrieving direct access attempt statistics.
 """
 
 
-def get_direct_access_stats(redis_client) -> dict:
+def get_direct_access_stats(redis_client, max_keys: int = 10_000) -> dict:
     """
-    Get statistics about direct access attempts.
+    Get statistics about direct access attempts using non-blocking SCAN.
     
     Args:
         redis_client: Redis connection
+        max_keys: Safety cap on scanned keys per prefix
         
     Returns:
         Dict with attempt and blacklist statistics
     """
     try:
-        # Count blacklisted IPs
-        blacklist_keys = redis_client.keys("direct_access:blacklist:*")
-        attempt_keys = redis_client.keys("direct_access:attempts:*")
-        
+        def _scan_prefix(pattern: str) -> list[str]:
+            found: list[str] = []
+            for raw_key in redis_client.scan_iter(match=pattern, count=200):
+                key_str = raw_key.decode("utf-8", errors="replace") if isinstance(raw_key, bytes) else str(raw_key)
+                found.append(key_str)
+                if len(found) >= max_keys:
+                    break
+            return found
+
+        blacklist_keys = _scan_prefix("direct_access:blacklist:*")
+        attempt_keys = _scan_prefix("direct_access:attempts:*")
+
         return {
             "blacklisted_ips": len(blacklist_keys),
             "tracked_ips": len(attempt_keys),

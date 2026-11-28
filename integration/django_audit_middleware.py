@@ -75,7 +75,7 @@ def _run_async(coro):
     try:
         return future.result(timeout=5.0)
     except Exception as e:
-        logger.warning("audit_async_bridge_failed", error=str(e))
+        logger.warning("audit_async_bridge_failed error=%s", str(e))
         return False
 
 
@@ -204,7 +204,7 @@ class DjangoAuditMiddleware:
             client = self._ensure_client()
             _run_async(client.log(**kwargs, fail_closed=False))
         except Exception as e:
-            logger.debug("audit_middleware_emit_failed", error=str(e))
+            logger.debug("audit_middleware_emit_failed error=%s", str(e))
 
     def _ensure_client(self) -> AuditClient:
         if self._client is None:

@@ -39,7 +39,7 @@ try:
 except Exception:  # pragma: no cover
     def _verify_for_url(url, **kwargs):  # type: ignore
         return True
-GATEWAY_URL = os.getenv("SECURITY_GATEWAY_URL", "https://smsly-security-gateway:80")
+GATEWAY_URL = os.getenv("SECURITY_GATEWAY_URL", "http://smsly-security-gateway:3000")
 SERVICE_NAME = os.getenv("SERVICE_NAME", "unknown-service")
 SERVICE_SECRET = os.getenv("SERVICE_SECRET", "")
 AUDIT_ENABLED = os.getenv("AUDIT_ENABLED", "true").lower() == "true"

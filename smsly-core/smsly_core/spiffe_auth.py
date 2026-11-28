@@ -38,18 +38,65 @@ import os
 from dataclasses import dataclass
 from typing import Dict, Optional, Set
 
+class _StdlibKwargsLogger:
+    """Thin adapter so structlog-style kwargs never raise TypeError on stdlib logging."""
+
+    def __init__(self, base: logging.Logger):
+        self._base = base
+
+    def _emit(self, level: int, msg: str, *args, **kwargs):
+        exc_info = kwargs.pop("exc_info", None)
+        stack_info = kwargs.pop("stack_info", False)
+        stacklevel = kwargs.pop("stacklevel", 1)
+        extra = kwargs.pop("extra", None)
+        if kwargs:
+            kv = " ".join(f"{k}={v!r}" for k, v in kwargs.items())
+            formatted = msg % args if args else msg
+            msg = f"{formatted} {kv}"
+            args = ()
+        self._base.log(
+            level,
+            msg,
+            *args,
+            exc_info=exc_info,
+            stack_info=stack_info,
+            stacklevel=stacklevel + 1,
+            extra=extra,
+        )
+
+    def debug(self, msg: str, *args, **kwargs):
+        self._emit(logging.DEBUG, msg, *args, **kwargs)
+
+    def info(self, msg: str, *args, **kwargs):
+        self._emit(logging.INFO, msg, *args, **kwargs)
+
+    def warning(self, msg: str, *args, **kwargs):
+        self._emit(logging.WARNING, msg, *args, **kwargs)
+
+    def error(self, msg: str, *args, **kwargs):
+        self._emit(logging.ERROR, msg, *args, **kwargs)
+
+    def critical(self, msg: str, *args, **kwargs):
+        self._emit(logging.CRITICAL, msg, *args, **kwargs)
+
+    def exception(self, msg: str, *args, **kwargs):
+        kwargs.setdefault("exc_info", True)
+        self._emit(logging.ERROR, msg, *args, **kwargs)
+
+
 try:
     import structlog
     logger = structlog.get_logger(__name__)
 except ImportError:
-    logger = logging.getLogger(__name__)
+    logger = _StdlibKwargsLogger(logging.getLogger(__name__))
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-SPIFFE_TRUST_DOMAIN = os.getenv("SPIFFE_TRUST_DOMAIN", "ecosystem.local")
+SPIFFE_TRUST_DOMAIN = os.getenv("SPIFFE_TRUST_DOMAIN", "trulay.co")
 SPIFFE_ID_PREFIX = f"spiffe://{SPIFFE_TRUST_DOMAIN}/service/"
+_LEGACY_SPIFFE_TRUST_DOMAINS = ("ecosystem.local",)
 
 # SPIFFE OID: 1.3.6.1.4.1.57264.1.1
 SPIFFE_OID_DOTTED = "1.3.6.1.4.1.57264.1.1"
@@ -169,7 +216,10 @@ class AuthResult:
 # SPIFFE ID Extraction from Certificate
 # ---------------------------------------------------------------------------
 
-def extract_spiffe_id_from_cert(peer_cert_der: bytes) -> Optional[str]:
+def extract_spiffe_id_from_cert(
+    peer_cert_der: bytes,
+    trust_domain: Optional[str] = None,
+) -> Optional[str]:
     """
     Extract SPIFFE ID from a peer's X.509 certificate (DER-encoded).
 
@@ -178,6 +228,7 @@ def extract_spiffe_id_from_cert(peer_cert_der: bytes) -> Optional[str]:
 
     Args:
         peer_cert_der: DER-encoded X.509 certificate from TLS handshake.
+        trust_domain: Optional explicit trust domain constraint.
 
     Returns:
         SPIFFE ID string or None.
@@ -185,7 +236,7 @@ def extract_spiffe_id_from_cert(peer_cert_der: bytes) -> Optional[str]:
     try:
         from cryptography import x509
         cert = x509.load_der_x509_certificate(peer_cert_der)
-        return _extract_spiffe_from_cert_obj(cert)
+        return _extract_spiffe_from_cert_obj(cert, trust_domain=trust_domain)
     except ImportError:
         logger.error("cryptography library required for SPIFFE ID extraction")
         return None
@@ -194,18 +245,24 @@ def extract_spiffe_id_from_cert(peer_cert_der: bytes) -> Optional[str]:
         return None
 
 
-def extract_spiffe_id_from_pem(cert_pem: bytes) -> Optional[str]:
+def extract_spiffe_id_from_pem(
+    cert_pem: bytes,
+    trust_domain: Optional[str] = None,
+) -> Optional[str]:
     """Extract SPIFFE ID from a PEM-encoded certificate."""
     try:
         from cryptography import x509
         cert = x509.load_pem_x509_certificate(cert_pem)
-        return _extract_spiffe_from_cert_obj(cert)
+        return _extract_spiffe_from_cert_obj(cert, trust_domain=trust_domain)
     except Exception as e:
         logger.warning("Failed to extract SPIFFE ID from PEM cert: %s", e)
         return None
 
 
-def _extract_spiffe_from_cert_obj(cert) -> Optional[str]:
+def _extract_spiffe_from_cert_obj(
+    cert,
+    trust_domain: Optional[str] = None,
+) -> Optional[str]:
     """Extract SPIFFE ID from a cryptography.x509.Certificate object."""
     try:
         from cryptography import x509
@@ -215,7 +272,7 @@ def _extract_spiffe_from_cert_obj(cert) -> Optional[str]:
         try:
             san_ext = cert.extensions.get_extension_for_oid(SPIFFE_OID)
             spiffe_id = str(san_ext.value.value)
-            if _is_valid_spiffe_id(spiffe_id):
+            if _is_valid_spiffe_id(spiffe_id, trust_domain=trust_domain):
                 return spiffe_id
         except x509.ExtensionNotFound:
             pass
@@ -228,7 +285,7 @@ def _extract_spiffe_from_cert_obj(cert) -> Optional[str]:
             for uri in san_ext.value.get_values_for_type(
                 x509.UniformResourceIdentifier
             ):
-                if uri.startswith("spiffe://") and _is_valid_spiffe_id(uri):
+                if uri.startswith("spiffe://") and _is_valid_spiffe_id(uri, trust_domain=trust_domain):
                     return uri
         except x509.ExtensionNotFound:
             pass
@@ -239,21 +296,47 @@ def _extract_spiffe_from_cert_obj(cert) -> Optional[str]:
     return None
 
 
-def _is_valid_spiffe_id(spiffe_id: str) -> bool:
+def _is_valid_spiffe_id(spiffe_id: str, trust_domain: Optional[str] = None) -> bool:
     """Validate SPIFFE ID format and trust domain."""
     if not spiffe_id or not isinstance(spiffe_id, str):
         return False
     if not spiffe_id.startswith("spiffe://"):
         return False
-    trust_domain = os.getenv("SPIFFE_TRUST_DOMAIN", SPIFFE_TRUST_DOMAIN)
-    prefix = f"spiffe://{trust_domain}/service/"
-    if not spiffe_id.startswith(prefix) and not spiffe_id.startswith(SPIFFE_ID_PREFIX):
+
+    if trust_domain is not None:
+        td = trust_domain.strip()
+        if not td:
+            return False
+        allowed_domains = (td,)
+    else:
+        env_td = os.getenv("SPIFFE_TRUST_DOMAIN", "").strip()
+        if env_td:
+            allowed_domains = (env_td, SPIFFE_TRUST_DOMAIN)
+        else:
+            allowed_domains = (SPIFFE_TRUST_DOMAIN, *_LEGACY_SPIFFE_TRUST_DOMAINS)
+
+    matched_prefix = None
+    for td in allowed_domains:
+        candidate_prefix = f"spiffe://{td}/"
+        if spiffe_id.startswith(candidate_prefix):
+            matched_prefix = candidate_prefix
+            break
+    if matched_prefix is None:
         return False
-    active_prefix = prefix if spiffe_id.startswith(prefix) else SPIFFE_ID_PREFIX
-    parts = spiffe_id[len(active_prefix):]
-    if not parts or any(c.isspace() for c in parts):
+
+    workload_path = spiffe_id[len(matched_prefix):]
+    if not workload_path or any(c.isspace() for c in workload_path):
         return False
-    if ".." in parts or "?" in parts or "#" in parts or "//" in parts or parts.startswith("/") or parts.endswith("/"):
+    if (
+        ".." in workload_path
+        or "?" in workload_path
+        or "#" in workload_path
+        or "//" in workload_path
+        or workload_path.startswith("/")
+        or workload_path.endswith("/")
+    ):
+        return False
+    if workload_path == "service":
         return False
     return True
 
@@ -277,18 +360,35 @@ class DualAuthValidator:
         service_name: str,
         allowed_callers: Optional[Set[str]] = None,
         flags: Optional[SPIFFEFeatureFlags] = None,
+        trust_domain: Optional[str] = None,
     ):
         self.service_name = service_name
-        self.allowed_callers = allowed_callers or set()
+        self._explicit_trust_domain = trust_domain is not None
+        self.trust_domain = (
+            trust_domain
+            or os.getenv("SPIFFE_TRUST_DOMAIN")
+            or SPIFFE_TRUST_DOMAIN
+            or "trulay.co"
+        ).strip()
+        self.allowed_callers = set(allowed_callers) if allowed_callers else set()
         self.flags = flags or get_spiffe_feature_flags()
 
         logger.info(
             "spiffe_validator_initialized",
             service=service_name,
+            trust_domain=self.trust_domain,
             phase=self.flags.migration_phase,
             spiffe_enabled=self.flags.feature_spiffe_mtls,
             strict_mode=self.flags.spiffe_mtls_strict_mode,
         )
+
+    def _is_caller_allowed(self, extracted_spiffe_id: str) -> bool:
+        """Return True if extracted_spiffe_id matches explicit allowlist or trust-domain-scoped '*'."""
+        if extracted_spiffe_id in self.allowed_callers:
+            return True
+        if "*" in self.allowed_callers:
+            return _is_valid_spiffe_id(extracted_spiffe_id, trust_domain=self.trust_domain)
+        return False
 
     def validate(
         self,
@@ -330,7 +430,10 @@ class DualAuthValidator:
         # STRICT: certificate is the only identity source
         extracted_spiffe_id = None
         if peer_cert_der:
-            extracted_spiffe_id = extract_spiffe_id_from_cert(peer_cert_der)
+            extracted_spiffe_id = extract_spiffe_id_from_cert(
+                peer_cert_der,
+                trust_domain=self.trust_domain if self._explicit_trust_domain else None,
+            )
 
         if not extracted_spiffe_id:
             logger.warning(
@@ -359,7 +462,7 @@ class DualAuthValidator:
                     spiffe_id=extracted_spiffe_id,
                     reason="Empty allowed-callers — deny by default (misconfigured rules)",
                 )
-            if extracted_spiffe_id not in self.allowed_callers:
+            if not self._is_caller_allowed(extracted_spiffe_id):
                 logger.warning(
                     "spiffe_caller_rejected",
                     service=self.service_name,
@@ -419,9 +522,11 @@ from pathlib import Path as _Path
 def _load_communication_rules() -> Dict[str, Set[str]]:
     """Load service communication rules from communication_rules.json."""
     # Try multiple locations
+    repo_root = _Path(__file__).resolve().parent.parent.parent.parent.parent
     candidates = [
         _os.environ.get("COMMUNICATION_RULES_PATH", ""),
-        str(_Path(__file__).parent.parent.parent.parent.parent / "INFRA" / "spire" / "communication_rules.json"),
+        str(repo_root / "TRUST" / "communication_rules.json"),
+        str(repo_root / "INFRA" / "spire" / "communication_rules.json"),
         "/opt/spire/communication_rules.json",
     ]
     
@@ -435,24 +540,28 @@ def _load_communication_rules() -> Dict[str, Set[str]]:
         return _FALLBACK_ALLOWED_CALLERS
     
     try:
-        with open(rules_file) as f:
+        with open(rules_file, encoding="utf-8") as f:
             data = _json.load(f)
         
-        # Resolve {trust_domain} placeholder
-        trust_domain = _os.environ.get("SPIFFE_TRUST_DOMAIN", "ecosystem.local")
+        # Resolve {trust_domain} placeholder using configured trust domain (default trulay.co)
+        trust_domain = (_os.environ.get("SPIFFE_TRUST_DOMAIN") or "trulay.co").strip() or "trulay.co"
         
         rules = data.get("rules", {})
         result: Dict[str, Set[str]] = {}
         
         for svc_name, svc_rules in rules.items():
             callers = svc_rules.get("allowed_callers", [])
-            # Resolve placeholders and filter wildcards
+            # Resolve placeholders and preserve trust-domain-scoped wildcard '*'
             resolved = set()
             for caller in callers:
                 if caller == "*":
                     resolved.add("*")
-                else:
+                elif "{trust_domain}" in caller:
                     resolved.add(caller.replace("{trust_domain}", trust_domain))
+                elif caller.startswith("spiffe://trulay.co/"):
+                    resolved.add(f"spiffe://{trust_domain}/{caller[len('spiffe://trulay.co/'):]}")
+                else:
+                    resolved.add(caller)
             result[svc_name] = resolved
         
         return result

@@ -135,7 +135,7 @@ class FastAPIAuditMiddleware(BaseHTTPMiddleware):
                 fail_closed=False,
             )
         except Exception as e:
-            logger.debug("audit_ingress_emit_failed", error=str(e))
+            logger.debug("audit_ingress_emit_failed error=%s", str(e))
 
         # --- Execute request (always proceeds) ---
         status_code = 500
@@ -167,7 +167,7 @@ class FastAPIAuditMiddleware(BaseHTTPMiddleware):
                     fail_closed=False,
                 )
             except Exception as e:
-                logger.debug("audit_egress_emit_failed", error=str(e))
+                logger.debug("audit_egress_emit_failed error=%s", str(e))
 
 
 # Backward compat alias

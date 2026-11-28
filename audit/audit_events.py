@@ -30,7 +30,7 @@ try:
 except Exception:  # pragma: no cover
     def _verify_for_url(url, **kwargs):  # type: ignore
         return True
-GATEWAY_URL = os.getenv("SECURITY_GATEWAY_URL", "https://smsly-security-gateway:80")
+GATEWAY_URL = os.getenv("SECURITY_GATEWAY_URL", "http://smsly-security-gateway:3000")
 SERVICE_NAME = os.getenv("SERVICE_NAME", "unknown-service")
 SERVICE_SECRET = os.getenv("SERVICE_SECRET", "")
 MAX_PAYLOAD_SIZE = 10000  # Max payload bytes to prevent DoS
@@ -867,9 +867,9 @@ class AuditClient:
         metadata_json = json.dumps(sanitized_metadata)
         if len(metadata_json) > MAX_PAYLOAD_SIZE:
             logger.warning(
-                "Audit payload too large, truncating",
-                size=len(metadata_json),
-                max_size=MAX_PAYLOAD_SIZE
+                "Audit payload too large, truncating size=%d max_size=%d",
+                len(metadata_json),
+                MAX_PAYLOAD_SIZE,
             )
             sanitized_metadata = {"_truncated": True, "_original_size": len(metadata_json)}
         
@@ -913,9 +913,9 @@ class AuditClient:
             
             if response.status_code >= 400:
                 logger.error(
-                    "Audit logging rejected by service",
-                    status=response.status_code,
-                    event_type=event_type
+                    "Audit logging rejected by service status=%d event_type=%s",
+                    response.status_code,
+                    event_type,
                 )
                 if should_fail_closed:
                     raise AuditUnavailableError(

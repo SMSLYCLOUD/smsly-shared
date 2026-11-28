@@ -44,7 +44,7 @@ class AuditStreamConsumer:
             self._redis = aioredis.from_url(self._redis_url, decode_responses=True)
             await self._redis.ping()
         except Exception as e:
-            logger.warning("audit_consumer_redis_unavailable", error=str(e))
+            logger.warning("audit_consumer_redis_unavailable error=%s", str(e))
             self._redis = None
             return False
         return True
@@ -55,7 +55,7 @@ class AuditStreamConsumer:
             await self._redis.xgroup_create(STREAM_KEY, GROUP, id="0", mkstream=True)
         except Exception as e:
             if "BUSYGROUP" not in str(e):
-                logger.warning("xgroup_create failed (non-fatal)", error=str(e))
+                logger.warning("xgroup_create failed (non-fatal) error=%s", str(e))
 
     async def start(self):
         if not await self._ensure():
@@ -104,7 +104,7 @@ class AuditStreamConsumer:
                 raise
             except Exception as e:
                 self._errors += 1
-                logger.warning("audit_consumer_cycle_failed", error=str(e))
+                logger.warning("audit_consumer_cycle_failed error=%s", str(e))
                 await asyncio.sleep(2)
 
     async def _process(self, entries):
@@ -133,7 +133,7 @@ class AuditStreamConsumer:
             except Exception as e:
                 # NOT acked -> stays PEL, reclaimed later by xautoclaim
                 self._errors += 1
-                logger.warning("audit_event_write_failed", msg_id=msg_id, error=str(e))
+                logger.warning("audit_event_write_failed msg_id=%s error=%s", msg_id, str(e))
 
     @property
     def stats(self):

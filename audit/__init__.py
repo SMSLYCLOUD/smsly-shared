@@ -53,7 +53,7 @@ except Exception:  # pragma: no cover
 
 class AuditConfig:
     """Audit client configuration from environment."""
-    GATEWAY_URL = os.getenv("SECURITY_GATEWAY_URL", "https://smsly-security-gateway:80")
+    GATEWAY_URL = os.getenv("SECURITY_GATEWAY_URL", "http://smsly-security-gateway:3000")
     SERVICE_NAME = os.getenv("SERVICE_NAME", "unknown-service")
     SERVICE_SECRET = os.getenv("SERVICE_SECRET", "")
     BATCH_SIZE = int(os.getenv("AUDIT_BATCH_SIZE", "10"))
@@ -158,7 +158,7 @@ class AuditClient:
         
         # Enforce payload size limit
         if len(body) > self.config.MAX_PAYLOAD_SIZE:
-            logger.warning("Audit payload too large", size=len(body))
+            logger.warning("Audit payload too large size=%d", len(body))
             event_data["payload"] = {"_truncated": True, "_size": len(body)}
             body = json.dumps(event_data)
         
@@ -180,7 +180,7 @@ class AuditClient:
                 timeout=self.config.TIMEOUT
             )
             if response.status_code >= 400:
-                logger.error("Audit rejected", status=response.status_code)
+                logger.error("Audit rejected status=%d", response.status_code)
                 if self.config.FAIL_CLOSED:
                     raise AuditUnavailableError(f"Audit rejected: {response.status_code}")
                 return False

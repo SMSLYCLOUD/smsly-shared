@@ -72,15 +72,15 @@ class InternalAuthMiddleware(BaseHTTPMiddleware):
                 allowed_callers=allowed,
             )
             logger.info(
-                "internal_auth_initialized",
-                service=service_name,
-                phase=self._spiffe_validator.flags.migration_phase.value,
+                "internal_auth_initialized service=%s phase=%s",
+                service_name,
+                self._spiffe_validator.flags.migration_phase.value,
             )
         else:
             logger.error(
-                "internal_auth_no_spiffe",
-                service=service_name,
-                msg="SPIFFE module not available — all requests will be rejected",
+                "internal_auth_no_spiffe service=%s msg=%s",
+                service_name,
+                "SPIFFE module not available — all requests will be rejected",
             )
 
     async def dispatch(self, request: Request, call_next):
@@ -90,7 +90,7 @@ class InternalAuthMiddleware(BaseHTTPMiddleware):
 
         # SPIFFE mTLS validation
         if not self._spiffe_validator:
-            logger.error("internal_auth_no_validator", path=request.url.path)
+            logger.error("internal_auth_no_validator path=%s", request.url.path)
             return JSONResponse(
                 status_code=503,
                 content={"error": "authentication_unavailable", "detail": "Auth service not configured"}
@@ -109,10 +109,10 @@ class InternalAuthMiddleware(BaseHTTPMiddleware):
 
         if not result.authenticated:
             logger.warning(
-                "internal_auth_failed",
-                path=request.url.path,
-                reason=result.reason,
-                client=request.client.host if request.client else "unknown",
+                "internal_auth_failed path=%s reason=%s client=%s",
+                request.url.path,
+                result.reason,
+                request.client.host if request.client else "unknown",
             )
             return JSONResponse(
                 status_code=401,
@@ -207,7 +207,7 @@ class AccountTypeRateLimiter:
     async def check_rate_limit(self, context: InternalContext) -> bool:
         """Check if request is within rate limits."""
         if self.redis is None:
-            logger.warning("rate_limit_no_redis", msg="Redis unavailable, denying request")
+            logger.warning("rate_limit_no_redis msg=%s", "Redis unavailable, denying request")
             return False  # Fail-closed
         
         account_type = context.account_type

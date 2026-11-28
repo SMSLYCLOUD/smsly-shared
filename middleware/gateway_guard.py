@@ -75,16 +75,16 @@ class GatewayGuardMiddleware(BaseHTTPMiddleware):
                 allowed_callers=allowed,
             )
             logger.info(
-                "gateway_guard_initialized",
-                service=service_name,
-                phase=self._spiffe_validator.flags.migration_phase.value,
-                allowed_callers=len(allowed),
+                "gateway_guard_initialized service=%s phase=%s allowed_callers=%d",
+                service_name,
+                self._spiffe_validator.flags.migration_phase.value,
+                len(allowed),
             )
         else:
             logger.error(
-                "gateway_guard_no_spiffe",
-                service=service_name,
-                msg="SPIFFE module not available — all requests will be blocked",
+                "gateway_guard_no_spiffe service=%s msg=%s",
+                service_name,
+                "SPIFFE module not available — all requests will be blocked",
             )
 
     def _is_public_path(self, path: str) -> bool:
@@ -125,9 +125,9 @@ class GatewayGuardMiddleware(BaseHTTPMiddleware):
         # SPIFFE mTLS validation
         if not self._spiffe_validator:
             logger.error(
-                "gateway_guard_no_validator",
-                service=self.service_name,
-                path=path,
+                "gateway_guard_no_validator service=%s path=%s",
+                self.service_name,
+                path,
             )
             return JSONResponse(
                 status_code=503,

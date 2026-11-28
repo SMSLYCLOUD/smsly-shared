@@ -24,7 +24,7 @@ _ORIG_REQUESTS_POST = requests.post
 
 _CHAIN_URL = os.getenv(
     "TRANSACTION_CHAIN_URL",
-    os.getenv("SECURITY_GATEWAY_URL", "https://smsly-security-gateway:80") + "/chain",
+    os.getenv("SECURITY_GATEWAY_URL", "http://smsly-security-gateway:3000") + "/chain",
 ).rstrip("/")
 
 _MESH_HEADERS = {
