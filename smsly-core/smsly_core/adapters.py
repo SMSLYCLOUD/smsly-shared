@@ -122,15 +122,18 @@ class BaseProviderAdapter(ABC):
     ) -> bool:
         """
         Validate webhook signature from provider.
-        
+
+        Fail-closed by default: subclasses must explicitly implement and verify
+        provider signatures.
+
         Args:
             headers: HTTP headers from webhook request
             body: Raw request body
-        
+
         Returns:
-            True if signature is valid
+            True if signature is valid, False otherwise
         """
-        return True  # Override in providers with signature verification
+        return False  # Fail closed unless subclass verifies provider signature
     
     async def parse_webhook(self, body: bytes) -> WebhookEvent:
         """

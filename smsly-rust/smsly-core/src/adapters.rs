@@ -103,7 +103,8 @@ pub trait BaseProviderAdapter: Send + Sync {
     }
 
     async fn validate_webhook(&self, _headers: &HashMap<String, String>, _body: &[u8]) -> bool {
-        true
+        // Fail closed by default; adapters must explicitly verify provider signatures.
+        false
     }
 
     async fn parse_webhook(&self, _body: &[u8]) -> Result<WebhookEvent, String> {

@@ -16,11 +16,14 @@ import os
 import ssl
 from typing import Any, Dict, Optional
 
-import requests
+try:
+    import requests
+    _ORIG_REQUESTS_POST = requests.post
+except ImportError:
+    requests = None  # type: ignore[assignment]
+    _ORIG_REQUESTS_POST = None
 
 logger = logging.getLogger(__name__)
-
-_ORIG_REQUESTS_POST = requests.post
 
 _CHAIN_URL = os.getenv(
     "TRANSACTION_CHAIN_URL",
@@ -78,19 +81,27 @@ def _chain_headers() -> Dict[str, str]:
 
 
 def _post_sync(url: str, payload: Dict[str, Any], headers: Dict[str, str], timeout: float):
-    """POST JSON synchronously while supporting ssl.SSLContext from verify_for_url."""
+    """POST JSON synchronously while supporting ssl.SSLContext from verify_for_url.
+
+    Works even in lean microservice containers where ``requests`` is not installed
+    by using ``httpx.Client`` (a core smsly-core dependency) while preserving unit
+    test compatibility when ``requests.post`` is monkeypatched.
+    """
     verify = _verify_for_url(url)
     # Preserve compatibility with unit tests that monkeypatch requests.post
-    if requests.post is not _ORIG_REQUESTS_POST:
+    if requests is not None and requests.post is not _ORIG_REQUESTS_POST:
         safe_verify = True if isinstance(verify, ssl.SSLContext) else verify
         return requests.post(url, json=payload, headers=headers, timeout=timeout, verify=safe_verify)
 
-    if isinstance(verify, ssl.SSLContext):
+    # Prefer httpx (always installed via smsly-core) when requests is absent or SSLContext is needed
+    if requests is None or isinstance(verify, ssl.SSLContext):
         try:
             import httpx
             with httpx.Client(timeout=timeout, verify=verify) as client:
                 return client.post(url, json=payload, headers=headers)
         except ImportError:
+            if requests is None:
+                raise RuntimeError("Neither httpx nor requests is installed for synchronous chain delivery")
             from requests.adapters import HTTPAdapter
 
             class _SSLContextAdapter(HTTPAdapter):

@@ -186,32 +186,40 @@ class TwilioAdapter(BaseProviderAdapter):
         headers: Dict[str, str],
         body: bytes,
     ) -> bool:
-        """Validate Twilio webhook signature."""
+        """Validate Twilio webhook signature (fail-closed)."""
+        import base64
         import hmac
         import hashlib
         from urllib.parse import urlencode, parse_qs
-        
-        signature = headers.get("X-Twilio-Signature", "")
-        url = headers.get("X-Original-Url", "")  # Must be set by gateway
-        
-        # Parse form data
-        params = parse_qs(body.decode())
-        sorted_params = sorted((k, v[0]) for k, v in params.items())
-        
-        # Build signature string
-        sig_string = url + urlencode(sorted_params)
-        
-        # Compute HMAC
-        expected = hmac.new(
-            self.auth_token.encode(),
-            sig_string.encode(),
-            hashlib.sha1,
-        ).digest()
-        
-        import base64
-        expected_b64 = base64.b64encode(expected).decode()
-        
-        return hmac.compare_digest(signature, expected_b64)
+
+        auth_token = getattr(self, "auth_token", None)
+        lower_headers = {k.lower(): v for k, v in (headers or {}).items()}
+        signature = (lower_headers.get("x-twilio-signature") or "").strip()
+        url = (lower_headers.get("x-original-url") or "").strip()  # Must be set by gateway
+
+        if not auth_token or not signature or not url:
+            return False
+
+        try:
+            # Parse form data
+            params = parse_qs(body.decode("utf-8"))
+            sorted_params = sorted((k, v[0]) for k, v in params.items())
+
+            # Build signature string
+            sig_string = url + urlencode(sorted_params)
+
+            # Compute HMAC
+            expected = hmac.new(
+                auth_token.encode(),
+                sig_string.encode(),
+                hashlib.sha1,
+            ).digest()
+
+            expected_b64 = base64.b64encode(expected).decode()
+
+            return hmac.compare_digest(signature, expected_b64)
+        except Exception:
+            return False
     
     async def parse_webhook(self, body: bytes) -> WebhookEvent:
         """Parse Twilio status callback."""

@@ -129,30 +129,37 @@ class VonageAdapter(BaseProviderAdapter):
         headers: Dict[str, str],
         body: bytes,
     ) -> bool:
-        """Validate Vonage webhook signature."""
+        """Validate Vonage webhook signature (fail-closed, constant-time)."""
         if not self.signature_secret:
-            return True  # No signature validation configured
-        
+            return False
+
         import hmac
         import hashlib
         import json
-        
-        signature = headers.get("Authorization", "").replace("Bearer ", "")
-        
+
+        lower_headers = {k.lower(): v for k, v in (headers or {}).items()}
+        auth_header = (lower_headers.get("authorization") or "").strip()
+        if auth_header.lower().startswith("bearer "):
+            signature = auth_header[7:].strip()
+        else:
+            signature = auth_header
+        if not signature:
+            return False
+
         # Vonage uses JWT or HMAC depending on configuration
         # This is a simplified HMAC check
         try:
             payload = json.loads(body)
             # Sort and serialize
             sig_string = "&".join(f"{k}={v}" for k, v in sorted(payload.items()) if k != "sig")
-            
+
             expected = hmac.new(
                 self.signature_secret.encode(),
                 sig_string.encode(),
                 hashlib.sha256,
             ).hexdigest()
-            
-            return signature.lower() == expected.lower()
+
+            return hmac.compare_digest(signature.lower(), expected.lower())
         except Exception:
             return False
     

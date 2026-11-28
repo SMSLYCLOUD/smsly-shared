@@ -440,3 +440,67 @@ class TestSpiffeAndHeadersHardening:
         headers = _chain_headers()
         assert headers.get("X-TRULAY-Validated") == "true"
         assert headers.get("X-Smsly-Validated") == "true"
+
+
+class TestWebhookValidationFailClosed:
+    """Ensure base and provider webhook validators fail closed on missing/invalid auth."""
+
+    @pytest.mark.asyncio
+    async def test_base_adapter_validate_webhook_fails_closed(self):
+        from smsly_core.adapters import BaseProviderAdapter, SendResult
+
+        class MinimalAdapter(BaseProviderAdapter):
+            async def send_sms(self, to, from_, body, metadata=None):
+                return SendResult(success=True)
+
+        adapter = MinimalAdapter({})
+        assert await adapter.validate_webhook({}, b"") is False
+        assert await adapter.validate_webhook({"X-Signature": "anything"}, b'{"ok":true}') is False
+
+    @pytest.mark.asyncio
+    async def test_vonage_validate_webhook_fails_closed_and_verifies_hmac(self):
+        import hashlib
+        import hmac as _hmac
+        import json
+        from smsly_core.providers.vonage import VonageAdapter
+
+        unconfigured = VonageAdapter({"api_key": "k", "api_secret": "s"})
+        assert await unconfigured.validate_webhook({}, b'{"status":"delivered"}') is False
+
+        secret = "vonage-test-secret"
+        adapter = VonageAdapter({"api_key": "k", "api_secret": "s", "signature_secret": secret})
+        body = json.dumps({"messageId": "m1", "status": "delivered"}).encode()
+        assert await adapter.validate_webhook({}, body) is False
+        assert await adapter.validate_webhook({"Authorization": "Bearer deadbeef"}, body) is False
+
+        sig_string = "&".join(f"{k}={v}" for k, v in sorted({"messageId": "m1", "status": "delivered"}.items()))
+        valid_sig = _hmac.new(secret.encode(), sig_string.encode(), hashlib.sha256).hexdigest()
+        assert await adapter.validate_webhook({"authorization": f"Bearer {valid_sig}"}, body) is True
+
+    @pytest.mark.asyncio
+    async def test_twilio_validate_webhook_fails_closed_and_verifies_hmac(self):
+        import base64
+        import hashlib
+        import hmac as _hmac
+        from urllib.parse import urlencode
+        from smsly_core.providers.twilio import TwilioAdapter
+
+        adapter = TwilioAdapter({"account_sid": "AC123", "auth_token": "tok_secret"})
+        body = b"MessageSid=SM123&MessageStatus=delivered"
+        url = "https://hooks.trulay.co/twilio"
+
+        assert await adapter.validate_webhook({}, body) is False
+        assert await adapter.validate_webhook({"X-Original-Url": url}, body) is False
+        assert await adapter.validate_webhook({"X-Twilio-Signature": "bad"}, body) is False
+        assert await adapter.validate_webhook({"X-Original-Url": url, "X-Twilio-Signature": "bad"}, body) is False
+
+        no_token = TwilioAdapter({"account_sid": "AC123", "auth_token": ""})
+        assert await no_token.validate_webhook({"X-Original-Url": url, "X-Twilio-Signature": "sig"}, body) is False
+
+        sig_string = url + urlencode(sorted([("MessageSid", "SM123"), ("MessageStatus", "delivered")]))
+        digest = _hmac.new(b"tok_secret", sig_string.encode(), hashlib.sha1).digest()
+        valid_sig = base64.b64encode(digest).decode()
+        assert await adapter.validate_webhook(
+            {"x-original-url": url, "x-twilio-signature": valid_sig},
+            body,
+        ) is True
